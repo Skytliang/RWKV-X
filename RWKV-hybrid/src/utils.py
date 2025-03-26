@@ -2,6 +2,7 @@ import json, time, random, os
 import numpy as np
 import torch
 from torch.nn import functional as F
+from collections import defaultdict
 
 time_slot = {}
 time_ref = time.time_ns()
@@ -128,3 +129,34 @@ def MillerRabinPrimalityTest(number):
                 return False
 
     return True
+
+
+def compress_parameter_names(parameter_names):
+    compressed = defaultdict(set)
+    for weight in parameter_names:
+        parts = weight.split('.')
+        # find the block number which is a number
+        split_index = None
+        for i, part in enumerate(parts):
+            if part.isdigit():
+                block = part
+                split_index = i
+                break
+        if split_index is not None:
+            block = parts[split_index]  # 提取block号
+            rest = '.'.join(parts[split_index+1:])  # 剩余部分
+            prefix = '.'.join(parts[:split_index]) # 
+            compressed[(prefix, rest)].add(block)
+        else:
+            compressed[(weight, '')].add('')
+
+    # format output, merge block numbers with the same rest part
+    output = []
+    for (prefix, rest), blocks in compressed.items():
+        if rest and blocks:
+            blocks = sorted([int(b) for b in blocks])
+            block_range = '{' + ','.join(map(str, blocks)) + '}'
+            output.append(f'{prefix}.{block_range}.{rest}')
+        else:
+            output.append(prefix)
+    return output
