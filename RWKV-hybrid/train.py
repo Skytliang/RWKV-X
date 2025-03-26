@@ -320,12 +320,4 @@ if __name__ == "__main__":
     # must set shuffle=False, persistent_workers=False (because worker is in another thread)
     data_loader = DataLoader(train_data, shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True)
 
-    # if args.train_type == 'states':
-    #     model.requires_grad_(False)
-    #     for name, module in model.named_modules():
-    #         for pname, param in module.named_parameters():
-    #             if pname.endswith('.time_state') and pname.startswith('blocks.'):
-    #                 print(pname)
-    #                 param.requires_grad = True
-
     trainer.fit(model, data_loader)
