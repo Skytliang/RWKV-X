@@ -210,6 +210,8 @@ for idx in TODO:
         print(tokenizer.decode(dix))
 
 print(f"{'-'*80}\n### Final {OUT_NAME}.bin/idx has {data_size} tokens, {data_len} items. Dtype {data._index.dtype}")
+meta = open(f"{OUT_NAME}.meta", "w")
+meta.write(f"### Final {OUT_NAME}.bin/idx has {data_size} tokens, {data_len} items. Dtype {data._index.dtype}\n")
 
 if data_size >= CTX_LEN * 3:
     n_chunk = int(data_size // CTX_LEN) - 1
@@ -218,8 +220,11 @@ if data_size >= CTX_LEN * 3:
             if is_prime(i):
                 print(f"\n### magic_prime = {i} (for ctxlen {CTX_LEN})")
                 print(f'\n--my_exit_tokens {data_size} --magic_prime {i} --ctx_len {CTX_LEN}\n')
+                meta.write(f"\n### magic_prime = {i} (for ctxlen {CTX_LEN})\n")
+                meta.write(f'\n--my_exit_tokens {data_size} --magic_prime {i} --ctx_len {CTX_LEN}\n')
                 break
-    
+meta.close()    
 # remove the temp file
 if os.path.exists(TEMP_FILE):
     os.remove(TEMP_FILE)
+
