@@ -75,6 +75,11 @@ if __name__ == "__main__":
     parser.add_argument("--my_exit", default=99999999, type=int)
     parser.add_argument("--my_exit_tokens", default=0, type=int)
 
+    # moba config
+    parser.add_argument("--n_moba_layer", default=1, type=int)
+    parser.add_argument("--moba_chunk_size", default=16, type=int)
+    parser.add_argument("--moba_topk", default=24, type=int)
+
     if pl.__version__[0]=='2':
         parser.add_argument("--accelerator", default="gpu", type=str)
         parser.add_argument("--strategy", default="auto", type=str)
@@ -253,7 +258,7 @@ if __name__ == "__main__":
     args.vocab_size = train_data.vocab_size
 
     from src.model import RWKV
-    model = RWKV(args)
+    rwkv = RWKV(args)
 
     if len(args.load_model) == 0 or args.my_pile_stage == 1:  # shall we build the initial weights?
         init_weight_name = f"{args.proj_dir}/rwkv-init.pth"
@@ -280,19 +285,32 @@ if __name__ == "__main__":
             rank_zero_info(f"Trying {args.load_model}")
             load_dict = torch.load(args.load_model, map_location="cpu")
 
-    state_file = f"{args.proj_dir}/rwkv-init-state.pth"
-    if os.path.isfile(state_file):
-        rank_zero_info(f"########## Loading State {state_file}... ##########")
-        state_dict = torch.load(state_file, map_location="cpu")
-        for k in state_dict:
-            load_dict[k] = state_dict[k]
-
     if args.load_partial == 1:
         load_keys = load_dict.keys()
-        for k in model.state_dict():
+        for k in rwkv.state_dict():
             if k not in load_keys:
-                load_dict[k] = model.state_dict()[k]
-    model.load_state_dict(load_dict)
+                load_dict[k] = rwkv.state_dict()[k]
+    rwkv.load_state_dict(load_dict)
+
+    ### init hybrid ###
+    from dataclasses import dataclass
+    @dataclass
+    class MOBAConfig:
+        n_moba_layer: int = args.n_moba_layer # number of layers
+        n_head: int = args.n_head # number of heads
+        n_embd: int = args.n_embd # embedding dimension
+        moba_chunk_size: int = args.moba_chunk_size # chunk size
+        moba_topk: int = args.moba_topk # topk
+
+    from src.model import RWKVHybrid
+    config = MOBAConfig()
+    model = RWKVHybrid(rwkv, args, config)
+    ### finetune settings ###
+    model.rwkv.emb.requires_grad_(False)
+    model.rwkv.blocks.requires_grad_(False)
+    model.rwkv.ln_out.requires_grad_(False)
+    model.rwkv.head.requires_grad_(True)
+    model.moba.requires_grad_(True)
 
     if pl.__version__[0]=='2':
         trainer = Trainer(accelerator=args.accelerator,strategy=args.strategy,devices=args.devices,num_nodes=args.num_nodes,precision=args.precision,
