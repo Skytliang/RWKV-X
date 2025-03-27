@@ -196,14 +196,13 @@ for config in model_list:
             if tested_samples >= max_samples:
                 break
 
-        all_losses = np.array(all_losses)
-        mean_loss = np.mean(all_losses, axis=0)
+        all_losses = np.array(all_losses) # (num_samples, seq_length)
+        mean_loss = np.mean(all_losses, axis=1) # (num_samples,)
         seq_length2loss[seq_length] = mean_loss.mean()
     file_name = f'{log_name_prefix}{model_path.split("/")[-1].replace(".pth", "")}.csv'
     df = pd.DataFrame(seq_length2loss.items(), columns=['seq_length', 'mean_loss'])
     df.to_csv(file_name, index=False)
     print('-------------------------------------')
     print(f'model name: {config["model"]}')
-    print(json.dumps(seq_length2loss, indent=2)) 
     print(f'Saved to {file_name}')
     print('-------------------------------------')
