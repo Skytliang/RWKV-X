@@ -17,6 +17,7 @@ if importlib.util.find_spec('deepspeed'):
 
 # from deepspeed.runtime.fp16.onebit.zoadam import ZeroOneAdam
 from .utils import compress_parameter_names
+from moba_efficient import moba_attn_varlen
 
 def __nop(ob):
     return ob
@@ -250,6 +251,109 @@ class Block(nn.Module):
         x = x + self.ffn(self.ln2(x))
         return x, v_first
 
+########################################################################################################
+# MOBA Block
+########################################################################################################
+def hf_to_fa(x: torch.Tensor):
+    """
+    Args:
+        x (torch.Tensor): [batch, heads, seqlen, head_dim]
+
+    Returns:
+        torch.Tensor: [batch * seqlen, heads, head_dim]
+    """
+    return x.permute(0, 2, 1, 3).reshape(-1, x.shape[1], x.shape[3])
+
+class CausalSelfAttention(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        assert config.n_embd % config.n_head == 0
+        # key, query, value projections for all heads, but in a batch
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=False)
+        # output projection
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        # regularization
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.moba_chunk_size = config.moba_chunk_size
+        self.moba_topk = config.moba_topk
+        self.window_size = config.moba_chunk_size * config.moba_topk
+        # zero init c_proj
+        self.c_proj.weight.data.zero_()
+
+    def forward(self, x):
+        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        return self.short_forward(x) if T <= self.window_size else self.long_forward(x)
+
+    def short_forward(self, x):
+        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
+        # e.g. in GPT-2 (124M), n_head=12, hs=64, so nh*hs=C=768 channels in the Transformer
+        qkv = self.c_attn(x)
+        q, k, v = qkv.split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        # output projection
+        y = self.c_proj(y)
+        return y
+
+    def long_forward(self, x):
+        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        device = x.device
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
+        # e.g. in GPT-2 (124M), n_head=12, hs=64, so nh*hs=C=768 channels in the Transformer
+        qkv = self.c_attn(x)
+        q, k, v = qkv.split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        # to flash attention format
+        q = hf_to_fa(q)
+        k = hf_to_fa(k)
+        v = hf_to_fa(v)
+        cu_seqlens_k = torch.cumsum(
+            torch.tensor([0] + [T] * B, device=x.device),
+            dim=0,
+            dtype=torch.int32,
+        )
+        # apply moba
+        y = moba_attn_varlen(
+            q=q,
+            k=k,
+            v=v,
+            cu_seqlens=cu_seqlens_k,
+            max_seqlen=T,
+            moba_chunk_size=self.moba_chunk_size,
+            moba_topk=self.moba_topk,
+        )
+        y = y.view(B, -1, x.shape[1], x.shape[2]).permute(0, 2, 1, 3) #  [batch, heads, seqlen, head_dim]
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # [B, T, C]
+        # output projection
+        y = self.c_proj(y)
+        return y
+
+class MOBABlock(nn.Module):
+    def __init__(self, args, layer_id, config):
+        super().__init__()
+        self.args = args
+        self.layer_id = layer_id
+
+        self.ln1 = nn.LayerNorm(args.n_embd)
+        self.ln2 = nn.LayerNorm(args.n_embd)
+
+        self.att = CausalSelfAttention(config)
+        self.ffn = RWKV_CMix_x070(args, layer_id)
+        
+    def forward(self, x):
+        x = x + self.att(self.ln1(x))
+        x = x + self.ffn(self.ln2(x))
+        return x
 
 class L2Wrap(torch.autograd.Function):
     @staticmethod
@@ -279,6 +383,15 @@ class RWKV(pl.LightningModule):
 
         if args.dropout > 0:
             self.drop0 = nn.Dropout(p = args.dropout)
+
+
+class RWKVHybrid(pl.LightningModule):
+    def __init__(self, rwkv, args, config):
+        super().__init__()
+        self.args = args
+        self.config = config
+        self.rwkv = rwkv
+        self.moba = nn.ModuleList([MOBABlock(args, i, config) for i in range(config.n_moba_layer)])
 
     def configure_optimizers(self):
         zero_weight_decay_group = [p for p in self.parameters() if len(p.squeeze().shape) < 2 and p.requires_grad]
@@ -311,19 +424,31 @@ class RWKV(pl.LightningModule):
             return cfg.get("offload_optimizer") or cfg.get("offload_param")
         return False
 
+    def get_block_order(self):
+        if self.config.n_moba_layer == 1:
+            blocks = self.rwkv.blocks + self.moba
+            return blocks
+
     def forward(self, x):
         args = self.args
-        x = self.emb(x)
+        x = self.rwkv.emb(x)
 
         if args.dropout > 0:
-            x = self.drop0(x)
+            x = self.rwkv.drop0(x)
 
         v_first = torch.empty_like(x)
-        for block in self.blocks:
-            if args.grad_cp == 1:
-                x, v_first = deepspeed.checkpointing.checkpoint(block, x, v_first)
+        blocks = self.get_block_order()
+        for block in blocks:
+            if isinstance(block, MOBABlock):
+                if args.grad_cp == 1:
+                    x = deepspeed.checkpointing.checkpoint(block, x)
+                else:
+                    x = block(x)
             else:
-                x, v_first = block(x, v_first)
+                if args.grad_cp == 1:
+                    x, v_first = deepspeed.checkpointing.checkpoint(block, x, v_first)
+                else:
+                    x, v_first = block(x, v_first)
 
         x = self.ln_out(x)
         x = self.head(x)
@@ -340,108 +465,3 @@ class RWKV(pl.LightningModule):
             all = self.all_gather(batch_parts)
             if self.trainer.is_global_zero:
                 self.trainer.my_loss_all = all
-
-    def generate_init_weight(self):
-        print(
-            f"""
-            ############################################################################
-            #
-            # Init model weight (slow for large models)...
-            #
-            ############################################################################
-            """
-        )
-        m = {}
-        n_params = 0
-        for n in self.state_dict():
-            p = self.state_dict()[n]
-            shape = p.shape
-
-            s0 = str(shape[0]) if len(shape) > 0 else ""
-            s1 = str(shape[1]) if len(shape) > 1 else ""
-            s2 = str(shape[2]) if len(shape) > 2 else ""
-            s3 = str(shape[3]) if len(shape) > 3 else ""
-            print(f"{s0.ljust(5)} {s1.ljust(5)} {s2.ljust(5)} {s3.ljust(5)} {n}", end="")
-
-            scale = 1.0
-            if "ln_" in n or ".ln" in n or "time_" in n or "_mask" in n or "pos_emb" in n or '.mask.' in n or n.endswith('_w') or n.endswith('_w1') or n.endswith('_w2') or n.endswith('_bias') or (".weight" not in n):
-                if 'ln_x.weight' in n:
-                    layer_scale = (1+int(n.split('.')[1])) / self.args.n_layer
-                    m[n] = (p * 0.0) + (layer_scale ** 0.7)
-                else:
-                    m[n] = p
-                print()
-            elif n == "emb.weight":
-                m[n] = p
-                scale = -1e-4
-                nn.init.uniform_(m[n], a=scale, b=-scale)
-                print(f" [scale {scale}]")
-            elif n == "head.weight":
-                m[n] = p
-                if self.args.vocab_size > self.args.n_embd:
-                    scale = 0.5 * math.sqrt(self.args.vocab_size / self.args.n_embd)
-                else:
-                    scale = 0.5
-                nn.init.orthogonal_(m[n], gain=scale)
-                print(f" [scale {scale}]")
-            else:
-                if 'mamba' in os.environ["RWKV_MY_TESTING"]:
-                    m[n] = p
-                    if '.out_proj.weight' in n:
-                        scale = 0
-                        nn.init.zeros_(m[n])
-                        print(f" [scale {scale}]")
-                    elif '.bias' in n:
-                        scale = 0
-                        nn.init.zeros_(m[n])
-                        print(f" [scale {scale}]")
-                    else:
-                        print()
-                else:
-                    assert n.endswith('.weight') # should always be true
-
-                    zero = [".att.output.", ".ffn.value.", ".ffn.receptance.", ".ffnPre.value.", ".ffnPre.receptance.", "head_q.", '.oo.', '.rr.']
-
-                    for kk in zero:
-                        if kk in n:
-                            scale = 0
-                    if "head_k." in n:
-                        scale = 0.1
-                    if "head_q." in n:
-                        scale = 0
-
-                    for kk in [".att.key."]:
-                        if kk in n:
-                            scale = 0.1
-                    for kk in [".att.gate."]:
-                        if kk in n:
-                            scale = 0.1
-
-                    print(f" [scale {scale}]")
-
-                    if self.args.accelerator.upper() == "GPU":
-                        m[n] = torch.empty((shape[0], shape[1]), device="cuda")
-                    else:
-                        m[n] = torch.empty((shape[0], shape[1]))
-
-                    if scale == 0:
-                        nn.init.zeros_(m[n])
-                    elif scale < 0:
-                        nn.init.uniform_(m[n], a=scale, b=-scale)
-                    else:
-                        nn.init.orthogonal_(m[n], gain=scale)
-
-            m[n] = m[n].cpu()
-            if os.environ["RWKV_FLOAT_MODE"] == "fp16":
-                m[n] = m[n].half()
-            elif os.environ["RWKV_FLOAT_MODE"] == "bf16":
-                m[n] = m[n].bfloat16()
-            n_params += m[n].numel()
-
-            # if n == "emb.weight":
-            #     print(m[n])
-
-        print('model params', n_params)
-        gc.collect()
-        torch.cuda.empty_cache()
-        return m
