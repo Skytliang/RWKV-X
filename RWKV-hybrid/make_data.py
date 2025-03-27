@@ -30,8 +30,13 @@ where the data is repeated 3 times (each time with different shuffle)
 # MMapIndexedDatasetBuilder
 ########################################################################################################
 
-from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
-tokenizer = TRIE_TOKENIZER("tokenizer/rwkv_vocab_v20230424.txt")
+#from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
+#tokenizer = TRIE_TOKENIZER("tokenizer/rwkv_vocab_v20230424.txt")
+
+# original tokenizer is too slow, so we use a faster one
+import pyrwkv_tokenizer
+tokenizer = pyrwkv_tokenizer.RWKVTokenizer()
+
 from src.binidx import MMapIndexedDataset
 def index_file_path(prefix_path):
     return prefix_path + ".idx"
