@@ -95,18 +95,75 @@ TEMP_FILE = "make_data_temp.jsonl"
 
 print(f"### Convert {IN_FILE} to {OUT_NAME}.bin/idx...")
 
-with open(IN_FILE, "r", encoding="utf-8") as file:
-    non_empty_lines = [line.strip() for line in file if line.strip()]
+def split_data_into_piles(input_file_path, num_piles):
+    """
+    将数据按行分割到多个临时文件（堆）中，临时文件在当前目录下创建
+    translate to english:
+    Split data into multiple temporary files (piles) by line, temporary files are created in the current directory
+    """
+    if not os.path.exists('temp_piles'):
+        os.mkdir('temp_piles')
 
-print(f"### Found {len(non_empty_lines)} non-empty lines in {IN_FILE}")
+    pile_files = []
+    for i in range(num_piles):
+        pile_file_path = os.path.join('temp_piles', f'pile_{i}.txt')
+        pile_files.append(open(pile_file_path, 'w'))
 
-file = open(TEMP_FILE, "w", encoding="utf-8")
+    num_non_empty_lines = 0
+    with open(input_file_path, 'r') as input_file:
+        for line in input_file:
+            line = line.strip()
+            if line:
+                pile_index = random.randint(0, num_piles - 1)
+                pile_files[pile_index].write(line + '\n')
+                num_non_empty_lines += 1
+
+    for pile_file in pile_files:
+        pile_file.close()
+
+    print(f"### Found {num_non_empty_lines} non-empty lines in {input_file_path}")
+    print(f"### Split data into {num_piles} piles.")
+    print(f"### Temporary files are stored in 'temp_piles' directory.")
+    return [os.path.join('temp_piles', f'pile_{i}.txt') for i in range(num_piles)]
+
+
+def shuffle_pile_and_write(pile_file_path, output_file_path):
+    """
+    对单个堆文件进行混洗并写入输出文件
+    translate to english:
+    Shuffle a single pile file and write to the output file
+    """
+    lines = []
+    with open(pile_file_path, 'r') as pile_file:
+        lines = pile_file.readlines()
+
+    random.shuffle(lines)
+
+    with open(output_file_path, 'a') as output_file:
+        output_file.writelines(lines)
+
+
+def two_pass_shuffle(input_file_path, output_file_path, num_piles):
+    """
+    执行两遍混洗算法
+    translate to english:
+    Perform two-pass shuffle algorithm
+    """
+    pile_file_paths = split_data_into_piles(input_file_path, num_piles)
+
+    for pile_file_path in pile_file_paths:
+        shuffle_pile_and_write(pile_file_path, output_file_path)
+        os.remove(pile_file_path)
+
+    os.rmdir('temp_piles')
+
+# empty the temp file
+if os.path.exists(TEMP_FILE):
+    os.remove(TEMP_FILE)
+# perform two-pass shuffle by N_EPOCH times    
 for i in range(N_EPOCH):
-    print(f"Shuffle: {i+1} out of {N_EPOCH}")
-    random.shuffle(non_empty_lines)
-    for entry in non_empty_lines:
-        file.write(entry + "\n")
-file.close()
+    print(f"### Shuffle: {i+1} out of {N_EPOCH}")
+    two_pass_shuffle(IN_FILE, TEMP_FILE, 100)
 
 ########################################################################################################
 
@@ -118,7 +175,7 @@ with fileinput.input(TEMP_FILE, encoding="utf-8") as ffff:
         x = json.loads(line)["text"]
         add_raw(x)
 builder.finalize((f"{OUT_NAME}.idx"))
-print("done")
+print("### Done")
 
 print("### Verifying result...")
 data = MMapIndexedDataset(OUT_NAME)
@@ -161,4 +218,8 @@ if data_size >= CTX_LEN * 3:
             if is_prime(i):
                 print(f"\n### magic_prime = {i} (for ctxlen {CTX_LEN})")
                 print(f'\n--my_exit_tokens {data_size} --magic_prime {i} --ctx_len {CTX_LEN}\n')
-                exit(0)
+                break
+    
+# remove the temp file
+if os.path.exists(TEMP_FILE):
+    os.remove(TEMP_FILE)
