@@ -280,6 +280,7 @@ class CausalSelfAttention(nn.Module):
         self.moba_topk = config.moba_topk
         self.window_size = config.moba_chunk_size * config.moba_topk
         # zero init c_proj
+        self.c_attn.weight.data.uniform_(-0.5/(config.n_embd**0.5), 0.5/(config.n_embd**0.5))
         self.c_proj.weight.data.zero_()
 
     def forward(self, x):
