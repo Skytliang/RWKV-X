@@ -17,6 +17,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--load_model", default="", type=str)  # full path, with .pth
     parser.add_argument("--wandb", default="", type=str)  # wandb project name. if "" then don't use wandb
+    parser.add_argument("--run_name", default="", type=str)  # run name for wandb
     parser.add_argument("--proj_dir", default="out", type=str)
     parser.add_argument("--random_seed", default="-1", type=int)
     parser.add_argument("--train_type", default="", type=str) # ""/"states"
@@ -57,7 +58,7 @@ if __name__ == "__main__":
     parser.add_argument("--my_pile_stage", default=0, type=int)  # my special pile mode
     parser.add_argument("--my_pile_shift", default=-1, type=int)  # my special pile mode - text shift
     parser.add_argument("--my_pile_edecay", default=0, type=int)
-    parser.add_argument("--layerwise_lr", default=1, type=int)  # layerwise lr for faster convergence (but slower it/s)
+    parser.add_argument("--layerwise_lr", default=0, type=int)  # layerwise lr for faster convergence (but slower it/s)
     parser.add_argument("--ds_bucket_mb", default=200, type=int)  # deepspeed bucket size in MB. 200 seems enough
     # parser.add_argument("--cuda_cleanup", default=0, type=int)  # extra cuda cleanup (sometimes helpful)
 
@@ -71,7 +72,7 @@ if __name__ == "__main__":
     parser.add_argument("--magic_prime", default=0, type=int)
     parser.add_argument("--my_qa_mask", default=0, type=int)
     parser.add_argument("--my_random_steps", default=0, type=int)
-    parser.add_argument("--my_testing", default='x052', type=str)
+    parser.add_argument("--my_testing", default='x070', type=str)
     parser.add_argument("--my_exit", default=99999999, type=int)
     parser.add_argument("--my_exit_tokens", default=0, type=int)
 
@@ -133,56 +134,8 @@ if __name__ == "__main__":
         else:
             args.dim_ffn = int((args.n_embd * 3.5) // 32 * 32) # default = 3.5x emb size
 
-    if args.data_type == "wds_img":
-        args.run_name = f"v{args.my_img_version}-{args.my_img_size}-{args.my_img_bit}bit-{args.my_img_clip}x{args.my_img_clip_scale}"
-        args.proj_dir = f"{args.proj_dir}-{args.run_name}"
-    else:
-        args.run_name = f"{args.vocab_size} ctx{args.ctx_len} L{args.n_layer} D{args.n_embd}"
     if not os.path.exists(args.proj_dir):
         os.makedirs(args.proj_dir)
-
-    if args.my_pile_stage > 0:
-        magic_prime_bak = args.magic_prime
-
-        if args.my_pile_shift < 0:
-            args.my_pile_shift = 0
-
-        if magic_prime_bak > 0:
-            args.magic_prime = magic_prime_bak
-        if args.my_qa_mask == 2:
-            args.epoch_count = 2 * args.magic_prime // 40320
-        else:
-            args.epoch_count = args.magic_prime // 40320
-
-        args.epoch_steps = 40320 // args.real_bsz
-        assert args.epoch_steps * args.real_bsz == 40320
-        # if args.my_pile_stage == 2:
-        #     assert args.lr_final == args.lr_init
-        if args.my_pile_stage >= 2:  # find latest saved model
-            list_p = []
-            for p in os.listdir(args.proj_dir):
-                if p.startswith("rwkv") and p.endswith(".pth"):
-                    p = ((p.split("-"))[1].split("."))[0]
-                    if p != "final":
-                        if p == "init":
-                            p = -1
-                        else:
-                            p = int(p)
-                        list_p += [p]
-            list_p.sort()
-            max_p = list_p[-1]
-            if len(list_p) > 1:
-                args.my_pile_prev_p = list_p[-2]  # in case max_p is corrupted
-            if max_p == -1:
-                args.load_model = f"{args.proj_dir}/rwkv-init.pth"
-            else:
-                args.load_model = f"{args.proj_dir}/rwkv-{max_p}.pth"
-                if args.warmup_steps < 0:
-                    if args.my_pile_stage == 2:
-                        args.warmup_steps = 10
-                    else:
-                        args.warmup_steps = 30
-            args.epoch_begin = max_p + 1
 
     samples_per_epoch = args.epoch_steps * args.real_bsz
     tokens_per_epoch = samples_per_epoch * args.ctx_len
@@ -294,6 +247,7 @@ if __name__ == "__main__":
 
     ### init hybrid ###
     from dataclasses import dataclass
+    args.n_head = args.dim_att // args.head_size_a
     @dataclass
     class MOBAConfig:
         n_moba_layer: int = args.n_moba_layer # number of layers

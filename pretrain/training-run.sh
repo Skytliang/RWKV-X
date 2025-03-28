@@ -18,11 +18,12 @@ MOBA_CHUNK_SIZE="2048"
 MOBA_TOPK="4"
 #
 CTX_LEN="64000" # !!! change magic_prime if you change ctx_len !!!
-RUN_NAME="rwkv-"$MODEL_TYPE"_L"$N_LAYER"-D"$N_EMBD"-C"$CTX_LEN"_ML"$N_MOBA_LAYER"_CS"$MOBA_CHUNK_SIZE"_TK"$MOBA_TOPK
+WANDB="rwkv-moba-hybrid-prolong64k"
+RUN_NAME="L"$N_LAYER"-D"$N_EMBD"-C"$CTX_LEN"_ML"$N_MOBA_LAYER"_CS"$MOBA_CHUNK_SIZE"_TK"$MOBA_TOPK
 PROJ_DIR="out/$RUN_NAME"
 #
 MODEL_FILE="RWKV-x070-World-0.1B-v2.8-20241210-ctx4096.pth"
-DATA_FILE="64k_pack_binidx"
+DATA_FILE="64k_pack_binidx/64k_pack"
 EXIT_TOKENS="36627478782"
 MAGIC_PRIME="572303"
 #######################################################################################################################
@@ -49,12 +50,12 @@ GPU_PER_NODE=1 # number of GPUs per node
 #
 DS_BUCKET_MB=2 # set to 2 for consumer GPUs, set to 200 for A100 / H100 (affects speed & vram usage)
 #
-python train.py --load_model $MODEL_FILE --wandb $RUN_NAME --proj_dir $PROJ_DIR --my_testing $MODEL_TYPE \
+python train.py --load_model $MODEL_FILE --wandb $WANDB --run_name $RUN_NAME --proj_dir $PROJ_DIR \
  --ctx_len $CTX_LEN --my_pile_stage 3 --epoch_count 36 --epoch_begin 0 \
  --data_file $DATA_FILE --my_exit_tokens $EXIT_TOKENS --magic_prime $MAGIC_PRIME \
  --num_nodes $N_NODE --micro_bsz $M_BSZ --n_layer $N_LAYER --n_embd $N_EMBD --pre_ffn 0 --head_qk 0 \
  --lr_init $LR_INIT --lr_final $LR_FINAL --warmup_steps 10 --beta1 0.9 --beta2 0.99 --adam_eps 1e-18 \
- --my_pile_edecay 0 --data_type "binidx" --vocab_size 65536 \
+ --my_pile_edecay 0 --data_type "binidx" --vocab_size 65536 --my_testing $MODEL_TYPE \
  --weight_decay 0.001 --epoch_save $EPOCH_SAVE --head_size_a 64 \
  --accelerator gpu --devices $GPU_PER_NODE --precision bf16 --strategy deepspeed_stage_1 --grad_cp $GRAD_CP \
  --enable_progress_bar True --ds_bucket_mb $DS_BUCKET_MB \

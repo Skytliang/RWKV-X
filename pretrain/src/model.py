@@ -17,7 +17,7 @@ if importlib.util.find_spec('deepspeed'):
 
 # from deepspeed.runtime.fp16.onebit.zoadam import ZeroOneAdam
 from .utils import compress_parameter_names
-from moba_efficient import moba_attn_varlen
+from .moba_efficient import moba_attn_varlen
 
 def __nop(ob):
     return ob
@@ -451,8 +451,8 @@ class RWKVHybrid(pl.LightningModule):
                 else:
                     x, v_first = block(x, v_first)
 
-        x = self.ln_out(x)
-        x = self.head(x)
+        x = self.rwkv.ln_out(x)
+        x = self.rwkv.head(x)
         return x
 
     def training_step(self, batch, batch_idx):
