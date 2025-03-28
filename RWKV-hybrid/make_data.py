@@ -89,7 +89,13 @@ def is_prime(n):
 
 N_EPOCH = int(sys.argv[2].strip())
 IN_FILE = sys.argv[1].strip()
+IN_FILE_DIR = os.path.dirname(IN_FILE)
 OUT_NAME = os.path.splitext(os.path.basename(IN_FILE))[0]
+OUT_DIR = os.path.join(IN_FILE_DIR, OUT_NAME+"_binidx")
+if not os.path.exists(OUT_DIR):
+    os.mkdir(OUT_DIR)
+OUT_NAME = os.path.join(OUT_DIR, OUT_NAME)
+OUT_NAME = os.path.abspath(OUT_NAME)
 CTX_LEN = int(sys.argv[3].strip())
 TEMP_FILE = "make_data_temp.jsonl"
 
