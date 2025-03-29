@@ -480,8 +480,9 @@ class RWKVHybrid(pl.LightningModule):
                 self.trainer.my_loss_all = all
 
     def on_train_epoch_end(self):
-        switch_epoch = self.args.epochs // 10
+        switch_epoch = self.args.epoch_count // 10 - 1 # 10% of epochs, 40 / 10 - 1 = 3
         if self.current_epoch == switch_epoch:
             self.rwkv.emb.requires_grad_(False)  # freeze embedding
             self.trainer.optimizers = [self.configure_optimizers()]  # reconfigure optimizer
-            rank_zero_info(f"Switched to Stage 2 at epoch {switch_epoch}: Embedding frozen, other layers trainable.")
+            rank_zero_info(f"Switched to Stage 2 at the end of epoch {self.current_epoch}!")
+            rank_zero_info(f"Stage 2: Embedding frozen, other layers trainable.")
