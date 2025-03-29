@@ -21,19 +21,24 @@ class MyDataset(Dataset):
         self.data = MMapIndexedDataset(args.data_file)
         self.data_size = len(self.data._bin_buffer) // self.data._index._dtype_size
         rank_zero_info(f"Data has {self.data_size} tokens.")
+        self.samples_per_epoch = self.args.epoch_steps * self.args.real_bsz
 
     def __len__(self):
         return self.args.epoch_steps * self.args.micro_bsz
 
     def __getitem__(self, idx):
         args = self.args
+        rank = self.global_rank
+        epoch = self.real_epoch
+        world_size = self.world_size
 
         ctx_len = args.ctx_len
         req_len = ctx_len + 1
         data = self.data
-
-        # cheat: pick a random spot in dataset
-        i = np.random.randint(0, self.data_size - req_len)
+        magic_prime = args.magic_prime
+        step = epoch * self.samples_per_epoch + (idx * world_size) + rank
+        # use a magic prime to sample the dataset deterministically yet randomly enough
+        i = ((step * step * step) % magic_prime) * ctx_len
 
         dix = data.get(idx=0, offset=i, length=req_len).astype(int)
 

@@ -77,9 +77,10 @@ if __name__ == "__main__":
     parser.add_argument("--my_exit_tokens", default=0, type=int)
 
     # moba config
-    parser.add_argument("--n_moba_layer", default=1, type=int)
+    parser.add_argument("--n_moba_layer", default=1, type=int) # 0 means no moba
     parser.add_argument("--moba_chunk_size", default=16, type=int)
     parser.add_argument("--moba_topk", default=24, type=int)
+    parser.add_argument("--enable_rwkv_ablation", action="store_true", default=False)
 
     if pl.__version__[0]=='2':
         parser.add_argument("--accelerator", default="gpu", type=str)
@@ -119,7 +120,7 @@ if __name__ == "__main__":
     args.num_sanity_val_steps = 0
     args.check_val_every_n_epoch = int(1e20)
     args.log_every_n_steps = int(1e20)
-    args.max_epochs = -1  # continue forever
+    args.max_epochs = args.epoch_count
     args.betas = (args.beta1, args.beta2)
     args.real_bsz = int(args.num_nodes) * int(args.devices) * args.micro_bsz
     os.environ["RWKV_MY_TESTING"] = args.my_testing
@@ -213,14 +214,9 @@ if __name__ == "__main__":
     from src.model import RWKV
     rwkv = RWKV(args)
 
-    if len(args.load_model) == 0 or args.my_pile_stage == 1:  # shall we build the initial weights?
-        init_weight_name = f"{args.proj_dir}/rwkv-init.pth"
-        generate_init_weight(model, init_weight_name)  # save initial weights
-        args.load_model = init_weight_name
-
     rank_zero_info(f"########## Loading {args.load_model}... ##########")
     try:
-        load_dict = torch.load(args.load_model, map_location="cpu")
+        load_dict = torch.load(args.load_model, map_location="cpu", weights_only=False)
         load_keys = list(load_dict.keys())
         for k in load_keys:
             if k.startswith('_forward_module.'):
@@ -260,11 +256,12 @@ if __name__ == "__main__":
     config = MOBAConfig()
     model = RWKVHybrid(rwkv, args, config)
     ### finetune settings ###
-    model.rwkv.emb.requires_grad_(False)
-    model.rwkv.blocks.requires_grad_(False)
-    model.rwkv.ln_out.requires_grad_(False)
-    model.rwkv.head.requires_grad_(True)
-    model.moba.requires_grad_(True)
+    # model.rwkv.emb.requires_grad_(False)
+    # model.rwkv.blocks.requires_grad_(False)
+    # model.rwkv.ln_out.requires_grad_(False)
+    # model.rwkv.head.requires_grad_(True)
+    # if config.n_moba_layer > 0:
+    #     model.moba.requires_grad_(True)
 
     if pl.__version__[0]=='2':
         trainer = Trainer(accelerator=args.accelerator,strategy=args.strategy,devices=args.devices,num_nodes=args.num_nodes,precision=args.precision,
@@ -283,7 +280,7 @@ if __name__ == "__main__":
             s1 = str(shape[1]) if len(shape) > 1 else ""
             s2 = str(shape[2]) if len(shape) > 2 else ""
             s3 = str(shape[3]) if len(shape) > 3 else ""
-            print(f"{s0.ljust(5)} {s1.ljust(5)} {s2.ljust(5)} {s3.ljust(5)} {n}")
+            #print(f"{s0.ljust(5)} {s1.ljust(5)} {s2.ljust(5)} {s3.ljust(5)} {n}")
 
     if "deepspeed" in args.strategy:
         trainer.strategy.config["zero_optimization"]["allgather_bucket_size"] = args.ds_bucket_mb * 1000 * 1000

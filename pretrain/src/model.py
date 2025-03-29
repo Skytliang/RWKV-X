@@ -392,7 +392,11 @@ class RWKVHybrid(pl.LightningModule):
         self.args = args
         self.config = config
         self.rwkv = rwkv
-        self.moba = nn.ModuleList([MOBABlock(args, i, config) for i in range(config.n_moba_layer)])
+        if config.n_moba_layer > 0:
+            if args.enable_rwkv_ablation:
+                self.moba = nn.ModuleList([Block(args, i) for i in range(config.n_moba_layer)])
+            else:
+                self.moba = nn.ModuleList([MOBABlock(args, i, config) for i in range(config.n_moba_layer)])
 
     def configure_optimizers(self):
         zero_weight_decay_group = [p for p in self.parameters() if len(p.squeeze().shape) < 2 and p.requires_grad]
@@ -425,10 +429,18 @@ class RWKVHybrid(pl.LightningModule):
             return cfg.get("offload_optimizer") or cfg.get("offload_param")
         return False
 
-    def get_block_order(self):
+    def get_block_exe_order(self):
+        if self.config.n_moba_layer == 0:
+            return self.rwkv.blocks
         if self.config.n_moba_layer == 1:
             blocks = self.rwkv.blocks + self.moba
             return blocks
+        interval = len(self.rwkv.blocks) // self.config.n_moba_layer # 12 // 4 = 3
+        blocks = [] # [RWKVBlock * interval, MOBABlock, RWKVBlock * interval, MOBABlock, ...]
+        for i in range(self.config.n_moba_layer):
+            blocks += self.rwkv.blocks[i * interval: (i + 1) * interval]
+            blocks.append(self.moba[i])
+        return blocks
 
     def forward(self, x):
         args = self.args
@@ -438,8 +450,8 @@ class RWKVHybrid(pl.LightningModule):
             x = self.rwkv.drop0(x)
 
         v_first = torch.empty_like(x)
-        blocks = self.get_block_order()
-        for block in blocks:
+        block_exe_order = self.get_block_exe_order()
+        for block in block_exe_order:
             if isinstance(block, MOBABlock):
                 if args.grad_cp == 1:
                     x = deepspeed.checkpointing.checkpoint(block, x)
@@ -466,3 +478,10 @@ class RWKVHybrid(pl.LightningModule):
             all = self.all_gather(batch_parts)
             if self.trainer.is_global_zero:
                 self.trainer.my_loss_all = all
+
+    def on_train_epoch_end(self):
+        switch_epoch = self.args.epochs // 10
+        if self.current_epoch == switch_epoch:
+            self.rwkv.emb.requires_grad_(False)  # freeze embedding
+            self.trainer.optimizers = [self.configure_optimizers()]  # reconfigure optimizer
+            rank_zero_info(f"Switched to Stage 2 at epoch {switch_epoch}: Embedding frozen, other layers trainable.")
