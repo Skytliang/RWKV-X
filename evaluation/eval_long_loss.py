@@ -64,6 +64,28 @@ def load_mamba(config):
 
     return model, tokenizer
 
+def load_rwkvx(config):
+    import os
+    os.environ["RWKV_JIT_ON"] = "0"
+    os.environ["RWKV_CUDA_ON"] = "1"
+    os.environ["RWKV_V7_ON"] = "1"
+    os.environ["RWKV_HEAD_SIZE_A"] = "64"
+
+    # import RWKV and RWKVHybrid
+    from src.model import RWKVHybrid, RWKV
+    from utils import load_configs_from_ckpt
+    rwkv_config, moba_config = load_configs_from_ckpt(config['model'])
+    rwkv = RWKV(rwkv_config)
+    model = RWKVHybrid(rwkv, rwkv_config, moba_config)
+    # load state dict
+    state_dict = torch.load(config['model'], map_location='cpu', weights_only=True)
+    msg = model.load_state_dict(state_dict, strict=False)
+    print(f'Load state dict: {msg} from {config["model"]}')
+    model = model.bfloat16().cuda()
+    # load tokenizer
+    from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
+    tokenizer = TRIE_TOKENIZER("tokenizer/rwkv_vocab_v20230424.txt")
+    return model, tokenizer
 
 def save_mean_loss(loss_vectors, save_path):
     import numpy as np
@@ -75,6 +97,7 @@ def save_mean_loss(loss_vectors, save_path):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('model', type=str)
+    parser.add_argument('--model_type', type=str, default='rwkv')
     parser.add_argument('--tokenizer', type=str, default='rwkv_vocab_v20230424.txt')
     parser.add_argument('--dataset', type=str, default='pg19_test_original.jsonl')
     parser.add_argument('--log_name', type=str, default='logs/pile_pg19/')
@@ -85,7 +108,7 @@ def parse_args():
 
 args = parse_args()
 dataset = load_jsonl(args.dataset)
-model_list = [{'type': 'rwkv', 'model': args.model, 'tokenizer': args.tokenizer}]
+model_list = [{'type': args.model_type, 'model': args.model, 'tokenizer': args.tokenizer}]
 # model_list = [
 #     # {'type': 'rwkv', 'model': 'rwkv_model/RWKV-x070-World-2.9B-v3-20250211-ctx4096.pth', 'tokenizer': 'rwkv_vocab_v20230424.txt'},
 #     # {'type': 'rwkv', 'model': "rwkv_model/RWKV-x060-World-3B-v2.1-20240417-ctx4096.pth", 'tokenizer': 'rwkv_vocab_v20230424.txt'},
@@ -118,6 +141,8 @@ for config in model_list:
     print(f'Loading model: {model_path}')
     if config['type'] == 'rwkv':
         model, tokenizer = load_rwkv(config)
+    elif config['type'] == 'rwkvx':
+        model, tokenizer = load_rwkvx(config)
     elif config['type'] in ['hf', 'hf_mamba']:
         model, tokenizer = load_hf(model_path)
     elif config['type'] == 'mamba':
@@ -131,7 +156,7 @@ for config in model_list:
         all_losses = []
         for sample in dataset:
             # tokenize
-            if config['type'] == 'rwkv':
+            if config['type'] == 'rwkv' or config['type'] == 'rwkvx':
                 if config['tokenizer'] == "rwkv_vocab_v20230424.txt":
                     input_ids = tokenizer.encode(sample['text'])
                 elif config['tokenizer'] == '20B_tokenizer.json':
@@ -153,10 +178,10 @@ for config in model_list:
             chunk_losses = []
             last_token = None 
             
-            with torch.no_grad():
-                if config['type'] in ['hf_mamba', 'mamba']:
+            with torch.inference_mode():
+                if config['type'] in ['hf_mamba', 'mamba', 'rwkvx']:
                     result = model.forward(torch.tensor([input_ids]).cuda())
-                    logits = result.logits.squeeze(0)
+                    logits = result.logits.squeeze(0) if config['type'] != 'rwkvx' else result.squeeze(0)
                     labels = torch.tensor(input_ids[1:], device=logits.device)
                     loss_fct = torch.nn.CrossEntropyLoss(reduction='none')
                     loss = loss_fct(logits[:-1].view(-1, logits.size(-1)), labels.view(-1))
@@ -196,7 +221,7 @@ for config in model_list:
             if tested_samples >= max_samples:
                 break
 
-        all_losses = np.array(all_losses) # (num_samples, seq_length)
+        all_losses = np.array([loss.float() for loss in all_losses])
         mean_loss = np.mean(all_losses, axis=1) # (num_samples,)
         seq_length2loss[seq_length] = mean_loss.mean()
     file_name = f'{log_name_prefix}{model_path.split("/")[-1].replace(".pth", "")}.csv'
