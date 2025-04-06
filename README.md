@@ -1,2 +1,2 @@
-# RWKV-Hybrid
+# RWKV-X
  
