@@ -68,7 +68,8 @@ def passkey_retrieval_test(model, tokenizer, device, n_garbage_prefix, n_garbage
     x = torch.tensor([input_ids], device=device, dtype=torch.long)
     for i in range(gen_length):
         logits = model.forward(x)
-        next_token = torch.argmax(logits, dim=-1)
+        last_logit = logits[:, -1:, :]
+        next_token = torch.argmax(last_logit, dim=-1)
         x = torch.cat([x, next_token], dim=1)
         all_outputs.append(next_token.item())
 
