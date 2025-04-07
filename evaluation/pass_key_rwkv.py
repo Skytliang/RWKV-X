@@ -55,7 +55,7 @@ def generate_prompt_landmark(n_garbage, seed, n_garbage_prefix):
     random.set_state(rnd_state)
     return "\n".join(lines), str(pass_key)
 
-
+@torch.inference_mode()
 def passkey_retrieval_test(model, tokenizer, device, n_garbage_prefix, n_garbage=60000, seed=666):
     prompt, answer = generate_prompt_landmark(n_garbage, seed, n_garbage_prefix)
     input_ids = tokenizer.encode(prompt)
@@ -86,6 +86,7 @@ def passkey_retrieval_test(model, tokenizer, device, n_garbage_prefix, n_garbage
 
 
 def main(args):
+    device = torch.device(args.device)
     torch.cuda.set_device(args.device)
 
     print("base model", args.base_model)

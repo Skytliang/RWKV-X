@@ -3,3 +3,5 @@ evaluate
 sqlitedict
 wonderwords
 nltk
+ninja
+rwkv
