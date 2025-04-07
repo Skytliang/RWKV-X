@@ -9,6 +9,7 @@
 import os, sys, types, json, math, time
 from tqdm import tqdm
 from dataclasses import dataclass
+from pathlib import Path
 import numpy as np
 np.set_printoptions(precision=4, suppress=True, linewidth=200)
 
@@ -31,6 +32,8 @@ RULER_TASK_SET = {'niah_single_1', 'niah_single_2', 'niah_single_3', 'niah_multi
 ########################################################################################################
 
 MODEL_NAME = sys.argv[1].replace(".pth", "")
+OUTPUT_DIR = Path(sys.argv[2])
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 print(f'Loading model - {MODEL_NAME}')
 model = RWKV(model=MODEL_NAME, strategy='cuda fp16')
@@ -289,5 +292,7 @@ if ruler_tasks:
 import pandas as pd
 df = pd.DataFrame(eval_results)
 task_str = '-'.join(eval_tasks)
-metric_output_path = MODEL_NAME + "_" + task_str + ".csv"
+model_stem = Path(MODEL_NAME).stem
+metric_output_name = model_stem + "_" + task_str + ".csv"
+metric_output_path = OUTPUT_DIR / metric_output_name
 df.to_csv(metric_output_path)
