@@ -8,6 +8,7 @@
 #
 import os, sys, types, json, math, time
 from tqdm import tqdm
+from dataclasses import dataclass
 import numpy as np
 np.set_printoptions(precision=4, suppress=True, linewidth=200)
 
@@ -26,28 +27,29 @@ from rwkv.utils import PIPELINE
 from lm_eval import tasks, evaluator, utils
 from lm_eval.models.huggingface import HFLM
 
+RULER_TASK_SET = {'niah_single_1', 'niah_single_2', 'niah_single_3', 'niah_multikey_1'}
 ########################################################################################################
 
-MODEL_NAME = sys.argv[1]
+MODEL_NAME = sys.argv[1].replace(".pth", "")
 
 print(f'Loading model - {MODEL_NAME}')
 model = RWKV(model=MODEL_NAME, strategy='cuda fp16')
 pipeline = PIPELINE(model, "rwkv_vocab_v20230424")
 
 eval_tasks = []
-#eval_tasks += ['lambada_openai']
+eval_tasks += ['niah_single_1']
 #eval_tasks += ['hellaswag','winogrande']
-eval_tasks += ['lambada_openai','piqa','storycloze_2016','hellaswag','winogrande']
-eval_tasks += ['arc_challenge','arc_easy','headqa_en', 'openbookqa','sciq']
+#eval_tasks += ['lambada_openai','piqa','storycloze_2016','hellaswag','winogrande']
+#eval_tasks += ['arc_challenge','arc_easy','headqa_en', 'openbookqa','sciq']
 # copa bug: ConnectionError: Couldn't reach https://nlp.stanford.edu/data/coqa/coqa-train-v1.0.json (error 503), the server is down.
 # fix storycloze_2016 bug: open lm_eval/tasks/storycloze/storycloze_2016.yaml, change dataset_path to: MoE-UNC/story_cloze and change dataset_name to: default
 # fix headqa bug: open lm_eval/tasks/headqa/headqa_en.yaml, change dataset_path to: head_qa
 
 # multilingual
-eval_tasks += ['lambada_multilingual', 'xstorycloze', 'xwinograd', 'xcopa']
+#eval_tasks += ['lambada_multilingual', 'xstorycloze', 'xwinograd', 'xcopa']
 
 # mmlu
-eval_tasks += ['mmlu']
+#eval_tasks += ['mmlu']
 
 # set num_fewshot
 num_fewshot = 0 # default, please change it by task
@@ -64,6 +66,10 @@ print('STOP_TOKEN', STOP_TOKEN)
 logitBuf = {}
 correctBuf = {}
 
+@dataclass
+class TokenizerOutput:
+    input_ids: torch.Tensor
+
 class TokenizerWrapper:
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
@@ -74,6 +80,10 @@ class TokenizerWrapper:
 
     def decode(self, tokens):
         return self.tokenizer.decode(tokens)
+
+    def __call__(self, string: str):
+        input_ids = torch.LongTensor(self.encode(string))
+        return TokenizerOutput(input_ids=input_ids)
 
 class EvalHarnessAdapter(HFLM):
     def __init__(self):
@@ -209,10 +219,9 @@ class EvalHarnessAdapter(HFLM):
             res.append(out_str)
         return reord.get_original(res)
 
-
     @torch.no_grad()
-    def run_eval(self, eval_tasks=None, num_fewshot=None, limit=None, bootstrap_iters=2, fewshot_random_seed=1234):
-        ''' Run evaluation on the given tasks.
+    def run_eval(self, eval_tasks=None, num_fewshot=None, limit=None, bootstrap_iters=2):
+        ''' Run evaluation on the tasks, such as MMLU, HellaSwag, LAMBADA, etc.
         :param eval_tasks: list of task names to evaluate on
         :param num_fewshot: number of few-shot examples to evaluate on
         '''
@@ -226,24 +235,59 @@ class EvalHarnessAdapter(HFLM):
                 if task_obj is None:
                     continue
             task_obj.set_config(key="num_fewshot", value=num_fewshot)
-
+        
         results = evaluator.evaluate(
-            lm=self,
-            task_dict=task_dict,
-            limit=limit,
-            bootstrap_iters=bootstrap_iters,
-        )
+                lm=self,
+                task_dict=task_dict,
+                limit=limit,
+                bootstrap_iters=bootstrap_iters,
+            )
+        return results
+
+    @torch.no_grad()
+    def run_ruler(self, eval_tasks=None):
+        ''' Run evaluation on the given tasks.
+        :param eval_tasks: list of task names to evaluate on
+        :param num_fewshot: number of few-shot examples to evaluate on
+        '''
+        ruler_metadata = {
+            'tokenizer': TokenizerWrapper(pipeline.tokenizer), 
+            "max_seq_lengths": [1000, 2000, 4000, 8000, 16_000, 32_000, 64_000, 128_000]
+            }
+        task_manager = tasks.TaskManager(metadata=ruler_metadata)
+        task_dict = tasks.get_task_dict(eval_tasks, task_manager)
+        for task_name in task_dict:
+            task_obj = task_dict[task_name]
+            if 'tokenizer' in task_obj.config.metadata:
+                task_obj.config.metadata.pop('tokenizer') # avoid bug
+        
+        results = evaluator.evaluate(
+                lm=self,
+                task_dict=task_dict,
+            )
         return results
 
 adapter = EvalHarnessAdapter()
-print(f'Running evaluation on {eval_tasks} with {num_fewshot}-shot examples')
-results = adapter.run_eval(
-    eval_tasks=eval_tasks,
-    num_fewshot=num_fewshot,
-    bootstrap_iters=10000,
-)
-print(json.dumps(results['results'], indent=2))
+normal_tasks = [task for task in eval_tasks if task not in RULER_TASK_SET]
+ruler_tasks = [task for task in eval_tasks if task in RULER_TASK_SET]
+results_list = []
+if normal_tasks:
+    print(f'Running evaluation on {normal_tasks} with {num_fewshot}-shot examples')
+    results = adapter.run_eval(
+        eval_tasks=normal_tasks,
+        num_fewshot=num_fewshot,
+        bootstrap_iters=100,
+    )
+    results_list.extend(results['results'])
+if ruler_tasks:
+    print(f'Running evaluation on RULER tasks: {ruler_tasks}')
+    results = adapter.run_ruler(
+        eval_tasks=ruler_tasks,
+    )
+    results_list.extend(results['results'])
+# convert results to a table
+import pandas as pd
+df = pd.DataFrame(results_list)
 task_str = '-'.join(eval_tasks)
-metric_output_path = MODEL_NAME.replace('.pth', f'_{task_str}.json')
-output_dict= dict(model=MODEL_NAME, tasks=eval_tasks, num_fewshot=num_fewshot, results=results['results'])
-json.dump(output_dict, open(metric_output_path, 'w'), indent=2)
+metric_output_path = MODEL_NAME + "_" + task_str + ".csv"
+df.to_csv(metric_output_path)
