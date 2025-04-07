@@ -270,7 +270,7 @@ class EvalHarnessAdapter(HFLM):
 adapter = EvalHarnessAdapter()
 normal_tasks = [task for task in eval_tasks if task not in RULER_TASK_SET]
 ruler_tasks = [task for task in eval_tasks if task in RULER_TASK_SET]
-results_list = []
+eval_results = {}
 if normal_tasks:
     print(f'Running evaluation on {normal_tasks} with {num_fewshot}-shot examples')
     results = adapter.run_eval(
@@ -278,16 +278,16 @@ if normal_tasks:
         num_fewshot=num_fewshot,
         bootstrap_iters=100,
     )
-    results_list.extend(results['results'])
+    eval_results.update(results['results'])
 if ruler_tasks:
     print(f'Running evaluation on RULER tasks: {ruler_tasks}')
     results = adapter.run_ruler(
         eval_tasks=ruler_tasks,
     )
-    results_list.extend(results['results'])
+    eval_results.update(results['results'])
 # convert results to a table
 import pandas as pd
-df = pd.DataFrame(results_list)
+df = pd.DataFrame(eval_results)
 task_str = '-'.join(eval_tasks)
 metric_output_path = MODEL_NAME + "_" + task_str + ".csv"
 df.to_csv(metric_output_path)
