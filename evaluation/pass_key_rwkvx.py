@@ -62,21 +62,16 @@ def passkey_retrieval_test(model, tokenizer, device, n_garbage_prefix, n_garbage
     len_token = len(input_ids)
     answer_ids = tokenizer.encode(answer)
     
-    # chunkwise prefill
-    CHUNK_SIZE = 4000
-    prefill_ids, next_token = input_ids[:-1], input_ids[-1]
-    state = None
-    for i in range(0, len(prefill_ids), CHUNK_SIZE):
-        prefill_token = prefill_ids[i: i+CHUNK_SIZE]
-        _, state = model(prefill_token, state)
-    
     # generate answer
     gen_length = len(answer_ids)
     all_outputs = []
+    x = torch.tensor([input_ids], device=device, dtype=torch.long)
     for i in range(gen_length):
-        logits, state = model([next_token], state)
-        next_token = torch.argmax(logits, dim=-1).item()
-        all_outputs.append(next_token)
+        logits = model.forward(x)
+        next_token = torch.argmax(logits, dim=-1)
+        x = torch.cat([x, next_token], dim=1)
+        all_outputs.append(next_token.item())
+
     
     model_answer = tokenizer.decode(all_outputs).strip()
     gold_answer = tokenizer.decode(answer_ids).strip()
@@ -85,21 +80,35 @@ def passkey_retrieval_test(model, tokenizer, device, n_garbage_prefix, n_garbage
     return is_correct, len_token
 
 
-def main(args):
-    torch.cuda.set_device(args.device)
-
-    print("base model", args.base_model)
-    # Load model and tokenizer
+def load_rwkvx(model_path):
     import os
     os.environ["RWKV_JIT_ON"] = "0"
     os.environ["RWKV_CUDA_ON"] = "1"
-    os.environ["RWKV_V7_ON"] = '1'
-    
-    from rwkv.model import RWKV
-    from rwkv.rwkv_tokenizer import TRIE_TOKENIZER
-    base_model = args.base_model.replace(".pth", "")
-    model = RWKV(model=base_model, strategy="cuda fp16")
+    os.environ["RWKV_V7_ON"] = "1"
+    os.environ["RWKV_HEAD_SIZE_A"] = "64"
+
+    # import RWKV and RWKVHybrid
+    from src.model import RWKVHybrid, RWKV
+    from utils import load_configs_from_ckpt
+    rwkv_config, moba_config = load_configs_from_ckpt(model_path)
+    rwkv = RWKV(rwkv_config)
+    model = RWKVHybrid(rwkv, rwkv_config, moba_config)
+    # load state dict
+    state_dict = torch.load(model_path, map_location='cpu', weights_only=True)
+    msg = model.load_state_dict(state_dict, strict=False)
+    print(f'Load state dict: {msg} from {model_path}')
+    model = model.bfloat16().cuda()
+    # load tokenizer
+    from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
     tokenizer = TRIE_TOKENIZER("tokenizer/rwkv_vocab_v20230424.txt")
+    return model, tokenizer
+
+
+def main(args):
+    torch.cuda.set_device(args.device)
+
+    # Load model and tokenizer 
+    model = load_rwkvx(args.base_model)
 
     total_test_points = args.max_tokens // args.interval
     all_accuries = []
