@@ -316,7 +316,7 @@ import pandas as pd
 df = pd.DataFrame(eval_results)
 task_str = '-'.join(eval_tasks)
 context_str = f"{args.max_seq_lengths[0]//1000}k-{args.max_seq_lengths[-1]//1000}k"
-model_stem = Path(MODEL_NAME).stem
+model_stem = Path(MODEL_NAME).stem + f"_CS{args.moba_chunk_size}-TK{args.moba_topk}"
 metric_output_name = model_stem + "_" + task_str + "_" + context_str +".csv"
 metric_output_path = OUTPUT_DIR / metric_output_name
 df.to_csv(metric_output_path)
