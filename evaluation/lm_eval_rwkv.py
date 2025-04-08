@@ -30,13 +30,26 @@ from lm_eval.models.huggingface import HFLM
 
 RULER_TASK_SET = {'niah_single_1', 'niah_single_2', 'niah_single_3', 'niah_multikey_1'}
 ########################################################################################################
+def parse_config():
+    parser = argparse.ArgumentParser(description='arg parser')
+    parser.add_argument('model_path', type=str)
+    parser.add_argument('--log_dir', type=str, default='logs/lm_eval/')
+    parser.add_argument('--device', type=str, default='cuda:0')
+    # add a group for eval
+    group = parser.add_argument_group('eval')
+    group.add_argument('--max_seq_lengths', type=int, nargs='+', default=[1000, 2000, 4000, 8000], help='max sequence lengths for ruler')
 
-MODEL_NAME = sys.argv[1].replace(".pth", "")
-OUTPUT_DIR = Path(sys.argv[2])
+    args = parser.parse_args()
+    return args
+
+args = parse_config()
+MODEL_NAME = Path(args.model_path)
+OUTPUT_DIR = Path(args.log_dir)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 print(f'Loading model - {MODEL_NAME}')
-model = RWKV(model=MODEL_NAME, strategy='cuda fp16')
+torch.cuda.set_device(args.device)
+model = RWKV(model=MODEL_NAME.stem, strategy='cuda fp16')
 pipeline = PIPELINE(model, "rwkv_vocab_v20230424")
 
 eval_tasks = []
@@ -111,7 +124,7 @@ class EvalHarnessAdapter(HFLM):
     
     @property
     def max_new_tokens(self):
-        return 256
+        return 64
 
     def tok_encode(self, string: str, **kwargs):
         return self.tokenizer.encode(string)
@@ -220,6 +233,7 @@ class EvalHarnessAdapter(HFLM):
             for term in gen_kwargs['until']:
                 out_str = out_str.split(term)[0]
             res.append(out_str)
+            torch.cuda.empty_cache()
         return reord.get_original(res)
 
     @torch.no_grad()
@@ -248,14 +262,14 @@ class EvalHarnessAdapter(HFLM):
         return results
 
     @torch.no_grad()
-    def run_ruler(self, eval_tasks=None):
+    def run_ruler(self, eval_tasks, max_seq_lengths):
         ''' Run evaluation on the given tasks.
         :param eval_tasks: list of task names to evaluate on
         :param num_fewshot: number of few-shot examples to evaluate on
         '''
         ruler_metadata = {
-            'tokenizer': TokenizerWrapper(pipeline.tokenizer), 
-            "max_seq_lengths": [1000, 2000, 4000, 8000, 16_000, 32_000, 64_000, 128_000]
+            'tokenizer': TokenizerWrapper(tokenizer), 
+            "max_seq_lengths": max_seq_lengths
             }
         task_manager = tasks.TaskManager(metadata=ruler_metadata)
         task_dict = tasks.get_task_dict(eval_tasks, task_manager)
@@ -283,16 +297,18 @@ if normal_tasks:
     )
     eval_results.update(results['results'])
 if ruler_tasks:
-    print(f'Running evaluation on RULER tasks: {ruler_tasks}')
+    print(f'Running evaluation on RULER tasks: {ruler_tasks} on max_seq_lengths: {args.max_seq_lengths}')
     results = adapter.run_ruler(
         eval_tasks=ruler_tasks,
+        max_seq_lengths=args.max_seq_lengths,
     )
     eval_results.update(results['results'])
 # convert results to a table
 import pandas as pd
 df = pd.DataFrame(eval_results)
 task_str = '-'.join(eval_tasks)
+context_str = f"{args.max_seq_lengths[0]//1000}k-{args.max_seq_lengths[-1]//1000}k"
 model_stem = Path(MODEL_NAME).stem
-metric_output_name = model_stem + "_" + task_str + ".csv"
+metric_output_name = model_stem + "_" + task_str + "_" + context_str +".csv"
 metric_output_path = OUTPUT_DIR / metric_output_name
 df.to_csv(metric_output_path)
