@@ -23,7 +23,7 @@ class MOBAConfig:
     moba_chunk_size: int = 2048
     moba_topk: int = 3
 
-def load_configs_from_ckpt(path: str) -> Tuple[RWKVConfig, MOBAConfig]:
+def load_configs_from_ckpt(path: str, moba_chunk_size=2048, moba_topk=3) -> Tuple[RWKVConfig, MOBAConfig]:
     ckpt = torch.load(path, map_location="cpu", weights_only=True)
     rwkv = {k[5:]: v for k, v in ckpt.items() if k.startswith("rwkv.")}
     moba = {k[5:]: v for k, v in ckpt.items() if k.startswith("moba.")}
@@ -36,5 +36,29 @@ def load_configs_from_ckpt(path: str) -> Tuple[RWKVConfig, MOBAConfig]:
 
     return (
         RWKVConfig(n_layer=n_layer, n_embd=n_embd, dim_att=n_embd, n_head=n_head, vocab_size=vocab_size),
-        MOBAConfig(n_moba_layer=n_moba_layer, n_head=n_head, n_embd=n_embd)
+        MOBAConfig(n_moba_layer=n_moba_layer, n_head=n_head, n_embd=n_embd, moba_chunk_size=moba_chunk_size, moba_topk=moba_topk)
     )
+
+
+def load_rwkvx(model_path, device='cuda', moba_chunk_size=2048, moba_topk=3):
+    import os
+    os.environ["RWKV_JIT_ON"] = "0"
+    os.environ["RWKV_CUDA_ON"] = "1"
+    os.environ["RWKV_V7_ON"] = "1"
+    os.environ["RWKV_HEAD_SIZE_A"] = "64"
+
+    # import RWKV and RWKVHybrid
+    from src.model import RWKVHybrid, RWKV
+    from utils import load_configs_from_ckpt
+    rwkv_config, moba_config = load_configs_from_ckpt(model_path, moba_chunk_size=moba_chunk_size, moba_topk=moba_topk)
+    rwkv = RWKV(rwkv_config)
+    model = RWKVHybrid(rwkv, rwkv_config, moba_config)
+    # load state dict
+    state_dict = torch.load(model_path, map_location='cpu', weights_only=True)
+    msg = model.load_state_dict(state_dict, strict=False)
+    print(f'Load state dict: {msg} from {model_path}')
+    model = model.bfloat16().to(device)
+    # load tokenizer
+    from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
+    tokenizer = TRIE_TOKENIZER("tokenizer/rwkv_vocab_v20230424.txt")
+    return model, tokenizer

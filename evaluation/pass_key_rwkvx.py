@@ -25,6 +25,10 @@ def parse_config():
     parser.add_argument('--num_tests', type=int, default=5, help='number of repeat testing for each length')
     parser.add_argument('--log_name', type=str, default='logs/passkey/')
     parser.add_argument('--device', type=str, default='cuda:0')
+    # add a group for moba
+    group = parser.add_argument_group('moba')
+    group.add_argument('--moba_chunk_size', type=int, default=2048, help='chunk size for moba')
+    group.add_argument('--moba_topk', type=int, default=3, help='topk for moba')
 
     args = parser.parse_args()
     return args
@@ -81,36 +85,16 @@ def passkey_retrieval_test(model, tokenizer, device, n_garbage_prefix, n_garbage
     return is_correct, len_token
 
 
-def load_rwkvx(model_path):
-    import os
-    os.environ["RWKV_JIT_ON"] = "0"
-    os.environ["RWKV_CUDA_ON"] = "1"
-    os.environ["RWKV_V7_ON"] = "1"
-    os.environ["RWKV_HEAD_SIZE_A"] = "64"
-
-    # import RWKV and RWKVHybrid
-    from src.model import RWKVHybrid, RWKV
-    from utils import load_configs_from_ckpt
-    rwkv_config, moba_config = load_configs_from_ckpt(model_path)
-    rwkv = RWKV(rwkv_config)
-    model = RWKVHybrid(rwkv, rwkv_config, moba_config)
-    # load state dict
-    state_dict = torch.load(model_path, map_location='cpu', weights_only=True)
-    msg = model.load_state_dict(state_dict, strict=False)
-    print(f'Load state dict: {msg} from {model_path}')
-    model = model.bfloat16().cuda()
-    # load tokenizer
-    from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
-    tokenizer = TRIE_TOKENIZER("tokenizer/rwkv_vocab_v20230424.txt")
-    return model, tokenizer
-
-
 def main(args):
+    from utils import load_rwkvx
     device = torch.device(args.device)
     torch.cuda.set_device(args.device)
 
     # Load model and tokenizer 
-    model, tokenizer = load_rwkvx(args.base_model)
+    model, tokenizer = load_rwkvx(
+        args.base_model, device=device, 
+        moba_chunk_size=args.moba_chunk_size, moba_topk=args.moba_topk
+        )
 
     total_test_points = args.max_tokens // args.interval
     all_accuries = []

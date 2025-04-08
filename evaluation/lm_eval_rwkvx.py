@@ -7,6 +7,7 @@
 # this version support lm_eval>=0.4.0
 #
 import os, sys, types, json, math, time
+import argparse
 from tqdm import tqdm
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,22 +23,38 @@ from torch.nn import functional as F
 os.environ["RWKV_JIT_ON"] = '0'
 os.environ["RWKV_CUDA_ON"] = '1'
 os.environ["RWKV_V7_ON"] = "1"
-from rwkv.model import RWKV
-from rwkv.utils import PIPELINE
 
 from lm_eval import tasks, evaluator, utils
 from lm_eval.models.huggingface import HFLM
+from utils import load_rwkvx
 
 RULER_TASK_SET = {'niah_single_1', 'niah_single_2', 'niah_single_3', 'niah_multikey_1'}
 ########################################################################################################
+def parse_config():
+    parser = argparse.ArgumentParser(description='arg parser')
+    parser.add_argument('model_path', type=str)
+    parser.add_argument('--log_dir', type=str, default='logs/lm_eval/')
+    parser.add_argument('--device', type=str, default='cuda:0')
+    # add a group for moba
+    group = parser.add_argument_group('moba')
+    group.add_argument('--moba_chunk_size', type=int, default=2048, help='chunk size for moba')
+    group.add_argument('--moba_topk', type=int, default=3, help='topk for moba')
 
-MODEL_NAME = sys.argv[1].replace(".pth", "")
-OUTPUT_DIR = Path(sys.argv[2])
+    args = parser.parse_args()
+    return args
+
+args = parse_config()
+MODEL_NAME = Path(args.model_path)
+OUTPUT_DIR = Path(args.log_dir)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 print(f'Loading model - {MODEL_NAME}')
-model = RWKV(model=MODEL_NAME, strategy='cuda fp16')
-pipeline = PIPELINE(model, "rwkv_vocab_v20230424")
+model, tokenizer = load_rwkvx(
+    model_path=MODEL_NAME,
+    device=args.device,
+    moba_chunk_size=args.moba_chunk_size,
+    moba_topk=args.moba_topk,
+)
 
 eval_tasks = []
 eval_tasks += ['niah_single_1']
@@ -58,8 +75,8 @@ eval_tasks += ['niah_single_1']
 num_fewshot = 0 # default, please change it by task
 
 
-RWKV_PAD = pipeline.tokenizer.encode('\n') # we will use '\n' as PAD
-STOP_TOKEN = RWKV_PAD + pipeline.tokenizer.encode('\n\n') # we will use '\n\n' as STOP
+RWKV_PAD = tokenizer.encode('\n') # we will use '\n' as PAD
+STOP_TOKEN = RWKV_PAD + tokenizer.encode('\n\n') # we will use '\n\n' as STOP
 # RWKV_PAD = [0] # you can try using [0] as pad
 print('RWKV_PAD', RWKV_PAD)
 print('STOP_TOKEN', STOP_TOKEN)
@@ -90,7 +107,7 @@ class TokenizerWrapper:
 
 class EvalHarnessAdapter(HFLM):
     def __init__(self):
-        self.tokenizer = TokenizerWrapper(pipeline.tokenizer)
+        self.tokenizer = TokenizerWrapper(tokenizer)
         self._batch_size = 1
 
     @property
@@ -157,7 +174,7 @@ class EvalHarnessAdapter(HFLM):
                 logit = 0
                 
                 with torch.no_grad():
-                    outputs, _ = model.forward(src, None, full_output=True)
+                    outputs = model.forward(src)
                     for i in range(q_len-1, len(src)-1):
                         oo = outputs[i].detach().float()
                         dst = src[i+1]
@@ -175,16 +192,17 @@ class EvalHarnessAdapter(HFLM):
         return res
     
     @torch.no_grad()
-    def greedy_generate(self, ctx, state=None):
+    def greedy_generate(self, ctx):
         all_tokens = []
         out_last = 0
         out_str = ''
+        tokens = self.tokenizer.encode(ctx)
+        tokens = torch.LongTensor([tokens]).to(model.device)
         for i in range(self.max_new_tokens):
-            tokens = self.tokenizer.encode(ctx) if i == 0 else [token]
-            while len(tokens) > 0:
-                out, state = model.forward(tokens[:self.max_length], state)
-                tokens = tokens[self.max_length:]
-            token = out.argmax().item()
+            out = model.forward(tokens)[:, -1:, :]
+            token = out.argmax(dim=-1)
+            tokens = torch.cat([tokens, token], dim=1)
+            token = token.item()
             if token in STOP_TOKEN:
                 break
             all_tokens += [token]
@@ -254,7 +272,7 @@ class EvalHarnessAdapter(HFLM):
         :param num_fewshot: number of few-shot examples to evaluate on
         '''
         ruler_metadata = {
-            'tokenizer': TokenizerWrapper(pipeline.tokenizer), 
+            'tokenizer': TokenizerWrapper(tokenizer), 
             "max_seq_lengths": [1000, 2000, 4000, 8000, 16_000, 32_000, 64_000, 128_000]
             }
         task_manager = tasks.TaskManager(metadata=ruler_metadata)
