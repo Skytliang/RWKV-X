@@ -7,6 +7,7 @@
 # this version support lm_eval>=0.4.0
 #
 import os, sys, types, json, math, time
+import argparse
 from tqdm import tqdm
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,13 +44,13 @@ def parse_config():
     return args
 
 args = parse_config()
-MODEL_NAME = Path(args.model_path)
+MODEL_NAME = args.model_path.replace('.pth', '')
 OUTPUT_DIR = Path(args.log_dir)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 print(f'Loading model - {MODEL_NAME}')
 torch.cuda.set_device(args.device)
-model = RWKV(model=MODEL_NAME.stem, strategy='cuda fp16')
+model = RWKV(model=MODEL_NAME, strategy='cuda fp16')
 pipeline = PIPELINE(model, "rwkv_vocab_v20230424")
 
 eval_tasks = []
@@ -268,7 +269,7 @@ class EvalHarnessAdapter(HFLM):
         :param num_fewshot: number of few-shot examples to evaluate on
         '''
         ruler_metadata = {
-            'tokenizer': TokenizerWrapper(tokenizer), 
+            'tokenizer': TokenizerWrapper(pipeline.tokenizer), 
             "max_seq_lengths": max_seq_lengths
             }
         task_manager = tasks.TaskManager(metadata=ruler_metadata)
