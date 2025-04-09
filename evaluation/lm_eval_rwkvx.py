@@ -26,7 +26,7 @@ os.environ["RWKV_V7_ON"] = "1"
 
 from lm_eval import tasks, evaluator, utils
 from lm_eval.models.huggingface import HFLM
-from utils import load_rwkvx
+from load_utils import load_rwkvx
 
 RULER_TASK_SET = {'niah_single_1', 'niah_single_2', 'niah_single_3', 'niah_multikey_1'}
 ########################################################################################################

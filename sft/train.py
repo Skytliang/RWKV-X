@@ -53,7 +53,8 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay_final", default=-1, type=float)
     parser.add_argument("--ds_bucket_mb", default=200, type=int)  # deepspeed bucket size in MB. 200 seems enough
 
-    parser.add_argument("--num_layers_to_freeze", default=0, type=int)  # freeze the first n layers
+    parser.add_argument("--moba_chunk_size", default=2048, type=int)
+    parser.add_argument("--moba_topk", default=3, type=int)
 
     parser = Trainer.add_argparse_args(parser)
     args = parser.parse_args()
@@ -165,25 +166,17 @@ if __name__ == "__main__":
 
     from src.trainer import train_callback
     from src.dataset import MyDataset
-    from tokenizer.rwkv_tokenizer import TRIE_TOKENIZER
-    from src.utils import freeze_rwkv_block
+    from load_utils import load_rwkvx
 
-    args.tokenizer = TRIE_TOKENIZER("tokenizer/rwkv_vocab_v20230424.txt")
+    model, tokenizer = load_rwkvx(
+        rwkv_args=args,
+        moba_chunk_size=args.moba_chunk_size,
+        moba_topk=args.moba_topk,
+    )
+    args.tokenizer = tokenizer
 
     train_data = MyDataset(args)
     args.vocab_size = train_data.vocab_size
-
-    from src.model import RWKV
-    # 256gb cpu memory is not enough for 8 gpus
-    # to use 6 gpus on 256gb cpu memory, use .half() to save memory
-    model = RWKV(args).half()
-    if args.load_model:
-        msg = model.load_state_dict(torch.load(args.load_model, map_location='cpu'), strict=False)
-        rank_zero_info(f"loading rwkv model from {args.load_model}: {msg}")
-    model.emb.requires_grad_(False) # freeze the embedding layer
-    rank_zero_info('freezing the embedding layer by default')
-    freeze_rwkv_block(model, args.num_layers_to_freeze) 
-    rank_zero_info(f"freezing the first {args.num_layers_to_freeze} layers")
 
     trainer = Trainer.from_argparse_args(args, callbacks=[train_callback(args)])
 

@@ -86,7 +86,7 @@ def passkey_retrieval_test(model, tokenizer, device, n_garbage_prefix, n_garbage
 
 
 def main(args):
-    from utils import load_rwkvx
+    from load_utils import load_rwkvx
     device = torch.device(args.device)
     torch.cuda.set_device(args.device)
 
