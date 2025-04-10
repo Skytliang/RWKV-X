@@ -8,6 +8,7 @@
 #
 import os, sys, types, json, math, time
 import argparse
+import random
 from tqdm import tqdm
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,13 @@ os.environ["RWKV_V7_ON"] = "1"
 from lm_eval import tasks, evaluator, utils
 from lm_eval.models.huggingface import HFLM
 from load_utils import load_rwkvx
+
+seed = 22
+# set seed for everything
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
+np.random.seed(seed)
+random.seed(seed)
 
 RULER_TASK_SET = {'niah_single_1', 'niah_single_2', 'niah_single_3', 'niah_multikey_1'}
 ########################################################################################################
@@ -320,3 +328,8 @@ model_stem = Path(MODEL_NAME).stem + f"_CS{args.moba_chunk_size}-TK{args.moba_to
 metric_output_name = model_stem + "_" + task_str + "_" + context_str +".csv"
 metric_output_path = OUTPUT_DIR / metric_output_name
 df.to_csv(metric_output_path)
+print(f"Evaluation results saved to {metric_output_path}")
+# pretty print the results
+print("Evaluation results:")
+import pprint
+pprint.pprint(eval_results)

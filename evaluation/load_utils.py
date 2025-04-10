@@ -49,7 +49,6 @@ def load_rwkvx(model_path, device='cuda', moba_chunk_size=2048, moba_topk=3):
 
     # import RWKV and RWKVHybrid
     from src.model import RWKVHybrid, RWKV
-    from utils import load_configs_from_ckpt
     rwkv_config, moba_config = load_configs_from_ckpt(model_path, moba_chunk_size=moba_chunk_size, moba_topk=moba_topk)
     rwkv = RWKV(rwkv_config)
     model = RWKVHybrid(rwkv, rwkv_config, moba_config)
