@@ -179,7 +179,6 @@ class EvalHarnessAdapter(HFLM):
 
             raw_src = '\n' + raw_src
             src = RWKV_PAD + src
-            src = torch.LongTensor([src]).to(model.device)
 
             sss = str(src)
             correct = True
@@ -192,7 +191,7 @@ class EvalHarnessAdapter(HFLM):
                 logit = 0
                 
                 with torch.no_grad():
-                    outputs = model.forward(src)
+                    outputs = model.forward(torch.LongTensor([src]).to(model.device))[0]
                     for i in range(q_len-1, len(src)-1):
                         oo = outputs[i].detach().float()
                         dst = src[i+1]
