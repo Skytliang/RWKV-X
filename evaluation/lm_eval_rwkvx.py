@@ -27,6 +27,8 @@ os.environ["RWKV_V7_ON"] = "1"
 
 from lm_eval import tasks, evaluator, utils
 from lm_eval.models.huggingface import HFLM
+from lm_eval.api.task import ConfigurableTask
+from lm_eval.api.group import ConfigurableGroup
 from load_utils import load_rwkvx
 
 seed = 22
@@ -36,7 +38,10 @@ torch.cuda.manual_seed_all(seed)
 np.random.seed(seed)
 random.seed(seed)
 
-RULER_TASK_SET = {'niah_single_1', 'niah_single_2', 'niah_single_3', 'niah_multikey_1'}
+RULER_TASK_GROUP = {'niah_single_1', 'niah_single_2', 'niah_single_3', 'niah_multikey_1'}
+TASK_TO_NUM_FEWSHOT = {
+    'mmlu': 5,
+}    
 ########################################################################################################
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
@@ -68,7 +73,8 @@ model, tokenizer = load_rwkvx(
 )
 
 eval_tasks = []
-eval_tasks += ['niah_single_1']
+#eval_tasks += ['niah_single_1']
+eval_tasks += ['lambada_openai','mmlu','arc_challenge','arc_easy']
 #eval_tasks += ['hellaswag','winogrande']
 #eval_tasks += ['lambada_openai','piqa','storycloze_2016','hellaswag','winogrande']
 #eval_tasks += ['arc_challenge','arc_easy','headqa_en', 'openbookqa','sciq']
@@ -83,7 +89,7 @@ eval_tasks += ['niah_single_1']
 #eval_tasks += ['mmlu']
 
 # set num_fewshot
-num_fewshot = 0 # default, please change it by task
+num_fewshot = {task: TASK_TO_NUM_FEWSHOT.get(task, 0) for task in eval_tasks}
 
 
 RWKV_PAD = tokenizer.encode('\n') # we will use '\n' as PAD
@@ -173,6 +179,7 @@ class EvalHarnessAdapter(HFLM):
 
             raw_src = '\n' + raw_src
             src = RWKV_PAD + src
+            src = torch.LongTensor([src]).to(model.device)
 
             sss = str(src)
             correct = True
@@ -253,21 +260,40 @@ class EvalHarnessAdapter(HFLM):
         return reord.get_original(res)
 
     @torch.no_grad()
-    def run_eval(self, eval_tasks=None, num_fewshot=None, limit=None, bootstrap_iters=2):
+    def run_eval(self, eval_tasks=None, num_fewshot=None, limit=None, bootstrap_iters=0):
         ''' Run evaluation on the tasks, such as MMLU, HellaSwag, LAMBADA, etc.
         :param eval_tasks: list of task names to evaluate on
         :param num_fewshot: number of few-shot examples to evaluate on
+        :param bootstrap_iters: Set to 0 for skipping all stderr calculations
         '''
-        task_dict = tasks.get_task_dict(eval_tasks)
+        def recursive_set_config(obj, key, value):
+            if isinstance(obj, ConfigurableTask):
+                obj.set_config(key=key, value=value)
+            elif isinstance(obj, dict):
+                for k, v in obj.items():
+                    recursive_set_config(v, key, value)
+
         if num_fewshot is None:
-            num_fewshot = {task: 0 for task in task_dict}
+            num_fewshot = {}
+
+        task_dict = tasks.get_task_dict(eval_tasks)
         for task_name in task_dict:
             task_obj = task_dict[task_name]
+            if isinstance(task_name, str):
+                task_fewshot = num_fewshot.get(task_name, 0)
+            if isinstance(task_name, ConfigurableGroup):
+                group_or_task_name = task_name.group_name
+                task_fewshot = num_fewshot.get(group_or_task_name, 0)
             if isinstance(task_obj, tuple):
                 _, task_obj = task_obj
                 if task_obj is None:
                     continue
-            task_obj.set_config(key="num_fewshot", value=num_fewshot)
+            if isinstance(task_obj, ConfigurableTask):
+                task_obj.set_config(key="num_fewshot", value=task_fewshot)
+                print(f"Task {task_name} is a ConfigurableTask, set num_fewshot to {task_fewshot}")
+            if isinstance(task_obj, dict):
+                print(f"Task {task_name} is a dict, recursing set it to {task_fewshot}")
+                recursive_set_config(task_obj, "num_fewshot", task_fewshot)
         
         results = evaluator.evaluate(
                 lm=self,
@@ -278,10 +304,11 @@ class EvalHarnessAdapter(HFLM):
         return results
 
     @torch.no_grad()
-    def run_ruler(self, eval_tasks, max_seq_lengths):
+    def run_ruler(self, eval_tasks, max_seq_lengths, bootstrap_iters=0):
         ''' Run evaluation on the given tasks.
         :param eval_tasks: list of task names to evaluate on
         :param num_fewshot: number of few-shot examples to evaluate on
+        :param bootstrap_iters: Set to 0 for skipping all stderr calculations
         '''
         ruler_metadata = {
             'tokenizer': TokenizerWrapper(tokenizer), 
@@ -297,19 +324,19 @@ class EvalHarnessAdapter(HFLM):
         results = evaluator.evaluate(
                 lm=self,
                 task_dict=task_dict,
+                bootstrap_iters=bootstrap_iters,
             )
         return results
 
 adapter = EvalHarnessAdapter()
-normal_tasks = [task for task in eval_tasks if task not in RULER_TASK_SET]
-ruler_tasks = [task for task in eval_tasks if task in RULER_TASK_SET]
+normal_tasks = [task for task in eval_tasks if task not in RULER_TASK_GROUP]
+ruler_tasks = [task for task in eval_tasks if task in RULER_TASK_GROUP]
 eval_results = {}
 if normal_tasks:
     print(f'Running evaluation on {normal_tasks} with {num_fewshot}-shot examples')
     results = adapter.run_eval(
         eval_tasks=normal_tasks,
         num_fewshot=num_fewshot,
-        bootstrap_iters=100,
     )
     eval_results.update(results['results'])
 if ruler_tasks:
