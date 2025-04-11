@@ -270,10 +270,10 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
-        # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=False)
-        # output projection
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.receptance = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.key = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.value = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.output = nn.Linear(config.n_embd, config.n_embd, bias=False)
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -281,8 +281,8 @@ class CausalSelfAttention(nn.Module):
         self.moba_topk = config.moba_topk
         self.window_size = config.moba_chunk_size * config.moba_topk
         # zero init c_proj
-        self.c_attn.weight.data.uniform_(-0.5/(config.n_embd**0.5), 0.5/(config.n_embd**0.5))
-        self.c_proj.weight.data.zero_()
+        #self.c_attn.weight.data.uniform_(-0.5/(config.n_embd**0.5), 0.5/(config.n_embd**0.5))
+        #self.c_proj.weight.data.zero_()
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
@@ -293,15 +293,14 @@ class CausalSelfAttention(nn.Module):
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
         # e.g. in GPT-2 (124M), n_head=12, hs=64, so nh*hs=C=768 channels in the Transformer
-        qkv = self.c_attn(x)
-        q, k, v = qkv.split(self.n_embd, dim=2)
+        q, k, v = self.receptance(x), self.key(x), self.value(x)
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
         # output projection
-        y = self.c_proj(y)
+        y = self.output(y)
         return y
 
     def long_forward(self, x):
@@ -393,11 +392,23 @@ class RWKVHybrid(pl.LightningModule):
         self.args = args
         self.config = config
         self.rwkv = rwkv
-        if config.n_moba_layer > 0:
-            if args.enable_rwkv_ablation:
-                self.moba = nn.ModuleList([Block(args, i) for i in range(config.n_moba_layer)])
-            else:
-                self.moba = nn.ModuleList([MOBABlock(args, i, config) for i in range(config.n_moba_layer)])
+        self.moba = nn.ModuleList([MOBABlock(args, i, config) for i in range(config.n_moba_layer)])
+        # initialize moba from rwkv
+        self.init_moba_from_rwkv()
+
+    def init_moba_from_rwkv(self):
+        ratio = len(self.rwkv.blocks) // self.config.n_moba_layer
+        # copy weights from rwkv to moba
+        for i in range(self.config.n_moba_layer):
+            moba_block = self.moba[i]
+            rwkv_block = self.rwkv.blocks[(i + 1) * ratio - 1]
+            moba_block.att.receptance.weight.data.copy_(rwkv_block.att.receptance.weight.data)
+            moba_block.att.key.weight.data.copy_(rwkv_block.att.key.weight.data)
+            moba_block.att.value.weight.data.copy_(rwkv_block.att.value.weight.data)
+            moba_block.att.output.weight.data.copy_(rwkv_block.att.output.weight.data)
+            moba_block.ffn.key.weight.data.copy_(rwkv_block.ffn.key.weight.data)
+            moba_block.ffn.value.weight.data.copy_(rwkv_block.ffn.value.weight.data)
+            moba_block.ffn.output.weight.data.copy_(rwkv_block.ffn.output.weight.data)
 
     def configure_optimizers(self):
         zero_weight_decay_group = [p for p in self.parameters() if len(p.squeeze().shape) < 2 and p.requires_grad]
