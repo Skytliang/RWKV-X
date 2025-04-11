@@ -80,7 +80,6 @@ if __name__ == "__main__":
     parser.add_argument("--n_moba_layer", default=1, type=int) # 0 means no moba
     parser.add_argument("--moba_chunk_size", default=16, type=int)
     parser.add_argument("--moba_topk", default=24, type=int)
-    parser.add_argument("--enable_rwkv_ablation", action="store_true", default=False)
 
     if pl.__version__[0]=='2':
         parser.add_argument("--accelerator", default="gpu", type=str)
