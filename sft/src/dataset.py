@@ -115,13 +115,19 @@ def get_sample_idx_mapping_for_epoch(data_size, epoch_count=100):
         sample_idx_mapping[epoch] = np.random.permutation(data_size)
     return sample_idx_mapping
 
+def load_jsonl(data_file):
+    list_data_dict = []
+    for line in open(data_file, "r"):
+        data_dict = json.loads(line)
+        list_data_dict.append(data_dict)
+    return list_data_dict
 
 class MyDataset(Dataset):
     def __init__(self, args):
         self.args = args
         self.vocab_size = args.vocab_size
         self.tokenizer = args.tokenizer
-        self.list_data_dict = json.load(open(args.data_file, "r"))
+        self.list_data_dict = load_jsonl(args.data_file)
         self.data_size = len(self.list_data_dict)
         # shuffle the data, avoid overfitting
         self.sample_idx_mapping = get_sample_idx_mapping_for_epoch(self.data_size)
