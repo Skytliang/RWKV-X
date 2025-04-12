@@ -15,6 +15,7 @@ if __name__ == "__main__":
 
     parser = ArgumentParser()
 
+    parser.add_argument("--load_pretrain", default="", type=str)  # full path, with .pth
     parser.add_argument("--load_model", default="", type=str)  # full path, with .pth
     parser.add_argument("--wandb", default="", type=str)  # wandb project name. if "" then don't use wandb
     parser.add_argument("--run_name", default="", type=str)  # run name for wandb
@@ -80,6 +81,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_moba_layer", default=1, type=int) # 0 means no moba
     parser.add_argument("--moba_chunk_size", default=16, type=int)
     parser.add_argument("--moba_topk", default=24, type=int)
+    parser.add_argument("--only_train_moba", action="store_true", default=False)
 
     if pl.__version__[0]=='2':
         parser.add_argument("--accelerator", default="gpu", type=str)
@@ -213,32 +215,10 @@ if __name__ == "__main__":
     from src.model import RWKV
     rwkv = RWKV(args)
 
-    rank_zero_info(f"########## Loading {args.load_model}... ##########")
-    try:
-        load_dict = torch.load(args.load_model, map_location="cpu", weights_only=False)
-        load_keys = list(load_dict.keys())
-        for k in load_keys:
-            if k.startswith('_forward_module.'):
-                load_dict[k.replace('_forward_module.','')] = load_dict[k]
-                del load_dict[k]
-    except:
-        rank_zero_info(f"Bad checkpoint {args.load_model}")
-        if args.my_pile_stage >= 2:  # try again using another checkpoint
-            max_p = args.my_pile_prev_p
-            if max_p == -1:
-                args.load_model = f"{args.proj_dir}/rwkv-init.pth"
-            else:
-                args.load_model = f"{args.proj_dir}/rwkv-{max_p}.pth"
-            args.epoch_begin = max_p + 1
-            rank_zero_info(f"Trying {args.load_model}")
-            load_dict = torch.load(args.load_model, map_location="cpu")
-
-    if args.load_partial == 1:
-        load_keys = load_dict.keys()
-        for k in rwkv.state_dict():
-            if k not in load_keys:
-                load_dict[k] = rwkv.state_dict()[k]
-    rwkv.load_state_dict(load_dict)
+    if args.load_pretrain:
+        rank_zero_info(f"########## Loading Pretrain {args.load_pretrain}... ##########")
+        load_dict = torch.load(args.load_pretrain, map_location="cpu", weights_only=False)
+        rwkv.load_state_dict(load_dict)
 
     ### init hybrid ###
     from dataclasses import dataclass
@@ -254,13 +234,14 @@ if __name__ == "__main__":
     from src.model import RWKVHybrid
     config = MOBAConfig()
     model = RWKVHybrid(rwkv, args, config)
-    ### finetune settings ###
-    # model.rwkv.emb.requires_grad_(False)
-    # model.rwkv.blocks.requires_grad_(False)
-    # model.rwkv.ln_out.requires_grad_(False)
-    # model.rwkv.head.requires_grad_(True)
-    # if config.n_moba_layer > 0:
-    #     model.moba.requires_grad_(True)
+    if args.only_train_moba:
+        model.rwkv.requires_grad_(False)
+        model.moba.requires_grad_(True)
+
+    if args.load_model:
+        rank_zero_info(f"########## Loading RWKV-X {args.load_model}... ##########")
+        load_dict = torch.load(args.load_model, map_location="cpu", weights_only=False)
+        model.load_state_dict(load_dict)
 
     if pl.__version__[0]=='2':
         trainer = Trainer(accelerator=args.accelerator,strategy=args.strategy,devices=args.devices,num_nodes=args.num_nodes,precision=args.precision,
