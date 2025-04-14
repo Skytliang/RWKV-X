@@ -13,7 +13,7 @@ MODEL_TYPE="x070" #
 #
 N_LAYER="32"
 N_EMBD="2560"
-N_MOBA_LAYER="1"
+N_MOBA_LAYER="8"
 MOBA_CHUNK_SIZE="2048"
 MOBA_TOPK="3"
 #
@@ -48,7 +48,7 @@ EPOCH_SAVE=1 # save every 10 "miniepochs" (1 miniepoch = 40320 * ctx_len tokens)
 N_NODE=1 # number of nodes
 GPU_PER_NODE=8 # number of GPUs per node
 #
-DS_BUCKET_MB=2 # set to 2 for consumer GPUs, set to 200 for A100 / H100 (affects speed & vram usage)
+DS_BUCKET_MB=200 # set to 2 for consumer GPUs, set to 200 for A100 / H100 (affects speed & vram usage)
 #
 python train.py --load_model $MODEL_FILE --wandb $WANDB --run_name $RUN_NAME --proj_dir $PROJ_DIR \
  --ctx_len $CTX_LEN --my_pile_stage 3 --epoch_count 5 --epoch_begin 0 \
