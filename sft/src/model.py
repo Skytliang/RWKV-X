@@ -18,6 +18,7 @@ if importlib.util.find_spec('deepspeed'):
 # from deepspeed.runtime.fp16.onebit.zoadam import ZeroOneAdam
 from .utils import compress_parameter_names
 from .moba_efficient import moba_attn_varlen
+from .dataset import IGNORE_INDEX
 
 def __nop(ob):
     return ob
