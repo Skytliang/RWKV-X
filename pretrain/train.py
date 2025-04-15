@@ -82,6 +82,7 @@ if __name__ == "__main__":
     parser.add_argument("--moba_chunk_size", default=16, type=int)
     parser.add_argument("--moba_topk", default=24, type=int)
     parser.add_argument("--only_train_moba", action="store_true", default=False)
+    parser.add_argument("--use_longce", action="store_true", default=False)
 
     if pl.__version__[0]=='2':
         parser.add_argument("--accelerator", default="gpu", type=str)

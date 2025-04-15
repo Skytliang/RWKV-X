@@ -395,6 +395,9 @@ class RWKVHybrid(pl.LightningModule):
         self.moba = nn.ModuleList([MOBABlock(args, i, config) for i in range(config.n_moba_layer)])
         # initialize moba from rwkv
         self.init_moba_from_rwkv()
+        self.use_longce = args.use_longce
+        if self.use_longce:
+            rank_zero_info(f"Using LongCE Loss for training.")
 
     def init_moba_from_rwkv(self):
         ratio = len(self.rwkv.blocks) // self.config.n_moba_layer
@@ -500,11 +503,60 @@ class RWKVHybrid(pl.LightningModule):
         if num_tokens_to_pad > 0:
             x = x[:, num_tokens_to_pad:]
         return x
+    
+    def compute_longce_loss(self, input_ids, targets, trunc_len=4000, internal=4000, thre=10):
+        """
+        LongCE: Dynamically adjusts token-wise loss weights based on the discrepancy 
+        between global and truncated local sequence losses.
+        Assumes input_ids and targets are already positionally aligned.
+        """
+        batch_size, seq_len = input_ids.shape
+
+        # Step 1: Compute full-sequence logits and token-level loss
+        logits = self(input_ids)  # [B, L, V]
+        loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
+        loss_full = loss_fn(logits.view(-1, logits.size(-1)),
+                            targets.view(-1)).view(batch_size, seq_len)
+
+        # Initialize all weights to 1
+        weight = torch.ones_like(loss_full)
+
+        with torch.no_grad():
+            for start in range(trunc_len, seq_len - trunc_len, internal):
+                end = min(start + trunc_len + internal, seq_len)
+                int_eff = end - (start + trunc_len)
+                if int_eff <= 0:
+                    continue
+
+                # Extract truncated input chunk: [B, S]
+                input_chunk = input_ids[:, start:end]
+                targets_chunk = targets[:, start:end]
+
+                logits_chunk = self(input_chunk)  # [B, S, V]
+                loss_chunk = loss_fn(logits_chunk[:, trunc_len: trunc_len + int_eff, :].reshape(-1, logits_chunk.size(-1)),
+                                     targets_chunk[:, trunc_len: trunc_len + int_eff].reshape(-1)).view(batch_size, int_eff)
+
+                # Get corresponding slice from full loss
+                full_loss_slice = loss_full[:, start + trunc_len: start + trunc_len + int_eff]
+
+                # Compute exponential discrepancy and clamp it
+                discrepancy = torch.exp(loss_chunk - full_loss_slice)
+                discrepancy = torch.clamp(discrepancy, max=thre)
+
+                # Assign the discrepancy as weight
+                weight[:, start + trunc_len: start + trunc_len + int_eff] = discrepancy
+
+        # Apply weights to full loss and average
+        weighted_loss = (loss_full * weight).mean()
+        return logits, weighted_loss   
 
     def training_step(self, batch, batch_idx):
-        idx, targets = batch
-        logits = self(idx)
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        input_ids, targets = batch
+        if self.use_longce:
+            logits, loss = self.compute_longce_loss(input_ids, targets)
+        else:
+            logits = self(input_ids)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
         return L2Wrap.apply(loss, logits)
 
     def training_step_end(self, batch_parts):
