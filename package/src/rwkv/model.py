@@ -284,6 +284,71 @@ class RWKV_x070(MyModule):
             x = x @ z['head.weight']
             return x, state
 
+################################## Sparse Attention ##############################################
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+from torch.nn.attention.flex_attention import _mask_mod_signature, and_masks
+
+def causal_mask(b, h, q_idx, kv_idx):
+    return q_idx >= kv_idx
+
+def generate_sliding_window(window_size: int) -> _mask_mod_signature:
+    """Generates a sliding window attention mask with a given window size.
+    Args:
+        window_size: The size of the sliding window.
+
+    Note:
+        We assume that the window size represents the lookback size and we mask out all future tokens
+        similar to causal masking.
+    """
+
+    def sliding_window(b, h, q_idx, kv_idx):
+        return q_idx - kv_idx <= window_size
+
+    sliding_window_mask = and_masks(sliding_window, causal_mask)
+    return sliding_window_mask
+
+class CausalSelfAttention(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        assert config.n_embd % config.n_head == 0
+        self.receptance = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.key = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.value = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.output = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        # regularization
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.moba_chunk_size = config.moba_chunk_size
+        self.moba_topk = config.moba_topk
+        self.window_size = config.moba_chunk_size * config.moba_topk
+
+    def one_forward(self, x, k_cache=None, v_cache=None):
+        ''' efficient sliding window attention used for decode
+        input: x: (1, 1, C)
+        '''
+        B, T, C = x.size()
+        q, k, v = self.receptance(x), self.key(x), self.value(x)
+
+    def seq_forward(self, x):
+        ''' efficient sliding window attention used for prefill
+        input: x: (B, T, C)
+        output: y: (B, T, C) and k, v cache (B, T, nh, hs)
+        '''
+        B, T, C = x.size()
+        q, k, v = self.receptance(x), self.key(x), self.value(x)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)        
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        # create sliding window mask
+        sliding_window_mask_mod = generate_sliding_window(window_size=self.moba_chunk_size)
+        block_mask = create_block_mask(sliding_window_mask_mod, B, self.n_head, T, T, device=x.device)
+        y = flex_attention(q, k, v, block_mask=block_mask)
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        # output projection
+        y = self.output(y)
+        return y, k, v
+    
 
 # 设置接口变量名
 RWKV = RWKV_x070
