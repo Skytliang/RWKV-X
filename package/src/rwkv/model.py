@@ -286,7 +286,7 @@ class CausalSparseAttention(nn.Module):
         self.moba_topk = config.moba_topk
         self.window_size = config.moba_chunk_size * config.moba_topk
 
-    def one_forward(self, x, k_cache, v_cache):
+    def forward_one(self, x, k_cache, v_cache):
         ''' used for decode, only one token at a time
         input: x: (1, 1, C)
         '''
@@ -327,7 +327,7 @@ class CausalSparseAttention(nn.Module):
         v_cache = torch.cat((v_cache, v), dim=1)
         return y, k_cache, v_cache
 
-    def seq_forward(self, x):
+    def forward_seq(self, x):
         '''
         input: x: (B, T, C)
         output: y: (B, T, C) and k, v cache (B, T, C)
