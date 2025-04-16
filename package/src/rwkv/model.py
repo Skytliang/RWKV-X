@@ -157,28 +157,13 @@ def RWKV_x070_CMix_seq(x, x_prev, x_k, K_, V_):
 
 
 class RWKV_x070(MyModule):
-    def __init__(self, model, strategy):
-        global DTYPE, DEVICE
+    def __init__(self, model_state_dict):
         super().__init__()
         self.eval()
         args = types.SimpleNamespace()
         self.args = args
-        args.MODEL_NAME = model
-
-        print(f'Loading {model} ({strategy})\n')
-
-        ss = strategy.split(' ')
-        DEVICE = ss[0]
-        if ss[1] == 'fp16':
-            DTYPE = torch.half
-        elif ss[1] == 'fp32':
-            DTYPE = torch.float32
-        elif ss[1] == 'bf16':
-            DTYPE = torch.bfloat16
-        else:
-            assert False, "currently rwkv7 strategy must be: cuda/cpu fp16/fp32/bf16"
         
-        self.z = torch.load(args.MODEL_NAME, map_location=DEVICE)
+        self.z = model_state_dict
         z = self.z
 
         self.n_head, self.head_size = z['blocks.0.att.r_k'].shape
@@ -285,29 +270,7 @@ class RWKV_x070(MyModule):
             return x, state
 
 ################################## Sparse Attention ##############################################
-from torch.nn.attention.flex_attention import flex_attention, create_block_mask
-from torch.nn.attention.flex_attention import _mask_mod_signature, and_masks
-
-def causal_mask(b, h, q_idx, kv_idx):
-    return q_idx >= kv_idx
-
-def generate_sliding_window(window_size: int) -> _mask_mod_signature:
-    """Generates a sliding window attention mask with a given window size.
-    Args:
-        window_size: The size of the sliding window.
-
-    Note:
-        We assume that the window size represents the lookback size and we mask out all future tokens
-        similar to causal masking.
-    """
-
-    def sliding_window(b, h, q_idx, kv_idx):
-        return q_idx - kv_idx <= window_size
-
-    sliding_window_mask = and_masks(sliding_window, causal_mask)
-    return sliding_window_mask
-
-class CausalSelfAttention(nn.Module):
+class CausalSparseAttention(nn.Module):
 
     def __init__(self, config):
         super().__init__()
@@ -323,32 +286,179 @@ class CausalSelfAttention(nn.Module):
         self.moba_topk = config.moba_topk
         self.window_size = config.moba_chunk_size * config.moba_topk
 
-    def one_forward(self, x, k_cache=None, v_cache=None):
-        ''' efficient sliding window attention used for decode
+    def one_forward(self, x, k_cache, v_cache):
+        ''' used for decode, only one token at a time
         input: x: (1, 1, C)
         '''
-        B, T, C = x.size()
+        assert x.size(0) == 1, "batch size must be 1"
+        assert x.size(1) == 1, "sequence length must be 1"
+        C = x.size(-1)
         q, k, v = self.receptance(x), self.key(x), self.value(x)
+        # split kv cache into two parts
+        KT = k_cache.size(1)
+        reminder = k_cache.size(1) % self.moba_chunk_size
+        k_chunk, k_reminder = k_cache[:, :KT-reminder, :], k_cache[:, KT-reminder:, :]
+        v_chunk, v_reminder = v_cache[:, :KT-reminder, :], v_cache[:, KT-reminder:, :]
+        # split k, v into chunks
+        num_chunks = k_chunk.size(1) // self.moba_chunk_size
+        k_chunk = k_chunk.view(1, num_chunks, self.moba_chunk_size, C)
+        v_chunk = v_chunk.view(1, num_chunks, self.moba_chunk_size, C)
+        # get chunk key
+        chunk_key = k_chunk.mean(dim=2) # (1, num_chunks, C)
+        # get top-k chunk
+        chunk_score = torch.einsum('bqc,bkc->bqk', q, chunk_key) # (1, 1, num_chunks)
+        topk_chunk_indices = torch.topk(chunk_score, self.moba_topk, dim=-1).indices.squeeze() # (moba_topk)
+        # get top-k chunk key and value
+        topk_k = k_chunk[:, topk_chunk_indices].view(1, -1, C) # (1, moba_topk * moba_chunk_size, C)
+        topk_v = v_chunk[:, topk_chunk_indices].view(1, -1, C) # (1, moba_topk * moba_chunk_size, C)
+        # combine with reminder and current k, v
+        k_comb = torch.cat((topk_k, k_reminder, k), dim=1)
+        v_comb = torch.cat((topk_v, v_reminder, v), dim=1)
+        # calculate attention and output
+        new_T = k_comb.size(1)
+        q = q.view(1, 1, self.n_head, C // self.n_head).transpose(1, 2)
+        k_comb = k_comb.view(1, new_T, self.n_head, C // self.n_head).transpose(1, 2)
+        v_comb = v_comb.view(1, new_T, self.n_head, C // self.n_head).transpose(1, 2)
+        y = F.scaled_dot_product_attention(q, k_comb, v_comb)
+        y = y.transpose(1, 2).contiguous().view(1, 1, C)
+        y = self.output(y)
+        # update k, v cache
+        k_cache = torch.cat((k_cache, k), dim=1)
+        v_cache = torch.cat((v_cache, v), dim=1)
+        return y, k_cache, v_cache
 
     def seq_forward(self, x):
-        ''' efficient sliding window attention used for prefill
+        '''
         input: x: (B, T, C)
-        output: y: (B, T, C) and k, v cache (B, T, nh, hs)
+        output: y: (B, T, C) and k, v cache (B, T, C)
         '''
         B, T, C = x.size()
-        q, k, v = self.receptance(x), self.key(x), self.value(x)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)        
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        # create sliding window mask
-        sliding_window_mask_mod = generate_sliding_window(window_size=self.moba_chunk_size)
-        block_mask = create_block_mask(sliding_window_mask_mod, B, self.n_head, T, T, device=x.device)
-        y = flex_attention(q, k, v, block_mask=block_mask)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
-        # output projection
-        y = self.output(y)
-        return y, k, v
+        if T <= self.window_size: # for short sequence, use full attention
+            q, k, v = self.receptance(x), self.key(x), self.value(x)
+            k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+            q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+            v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
+            y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+            k = k.transpose(1, 2).contiguous().view(B, T, C)
+            v = v.transpose(1, 2).contiguous().view(B, T, C)
+            # output projection
+            y = self.output(y)
+            return y, k, v
+        else:
+            # pad on right side to match the chunk size
+            pad_size = self.moba_chunk_size - (T % self.moba_chunk_size)
+            if pad_size != self.moba_chunk_size:
+                zero_pad = torch.zeros((B, pad_size, C), dtype=x.dtype, device=x.device)
+                x = torch.cat((x, zero_pad), dim=1)
+                T = x.size(1) # update T after padding
+            # fold x into chunks, merge with batch size dim
+            num_chunks = T // self.moba_chunk_size
+            x = x.view(B * num_chunks, self.moba_chunk_size, C)
+            new_B, new_T, C = x.size()
+            q, k, v = self.receptance(x), self.key(x), self.value(x)
+            k = k.view(new_B, new_T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)        
+            q = q.view(new_B, new_T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+            v = v.view(new_B, new_T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
+            y = y.transpose(1, 2).contiguous().view(new_B, new_T, C) # re-assemble all head outputs side by side
+            k = k.transpose(1, 2).contiguous().view(new_B, new_T, C)
+            v = v.transpose(1, 2).contiguous().view(new_B, new_T, C)
+            # output projection
+            y = self.output(y)
+            # unfold y, k, v into original shape
+            y = y.view(B, num_chunks*self.moba_chunk_size, C)
+            k = k.view(B, num_chunks*self.moba_chunk_size, C)
+            v = v.view(B, num_chunks*self.moba_chunk_size, C)
+            # remove padding
+            if pad_size != self.moba_chunk_size:
+                y = y[:, :-pad_size, :]
+                k = k[:, :-pad_size, :]
+                v = v[:, :-pad_size, :]
+            return y, k, v
+
+
+########################################################################################################
+# RWKV ChannelMix
+########################################################################################################
+class RWKV_CMix_x070(nn.Module):
+    def __init__(self, n_embd):
+        super().__init__()
+        self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
+        self.key = nn.Linear(n_embd, n_embd * 4, bias=False)
+        self.value = nn.Linear(n_embd * 4, n_embd, bias=False)
+
+    def forward(self, x):
+        xx = self.time_shift(x) - x
+        
+        k = x + xx * self.x_k
+        k = torch.relu(self.key(k)) ** 2
+
+        return self.value(k)
     
 
-# 设置接口变量名
-RWKV = RWKV_x070
+class SparseAttentionBlock(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(config.n_embd)
+        self.ln2 = nn.LayerNorm(config.n_embd)
+
+        self.att = CausalSparseAttention(config)
+        self.ffn = RWKV_CMix_x070(config.n_embd)
+        
+    def forward(self, x):
+        x = x + self.att(self.ln1(x))
+        x = x + self.ffn(self.ln2(x))
+        return x
+
+@dataclass
+class MOBAConfig:
+    n_moba_layer: int
+    n_head: int
+    n_embd: int
+    moba_chunk_size: int = 2048
+    moba_topk: int = 3
+
+class RWKV_X(nn.Module):
+    def __init__(self, model_path, strategy):
+        super().__init__()
+        print(f'Loading {model_path} ({strategy})\n')
+        global DTYPE, DEVICE
+        rwkv_state_dict, moba_state_dict, config = self.load_from_ckpt(model_path, strategy)
+        self.rwkv = RWKV_x070(rwkv_state_dict, strategy)
+        self.moba = nn.ModuleList([SparseAttentionBlock(config) for i in range(config.n_moba_layer)]).to(device=DEVICE)
+        self.moba.load_state_dict(moba_state_dict, strict=True)
+
+    def load_from_ckpt(self, model_path, strategy):
+        ss = strategy.split(' ')
+        DEVICE = ss[0]
+        if ss[1] == 'fp16':
+            DTYPE = torch.half
+        elif ss[1] == 'fp32':
+            DTYPE = torch.float32
+        elif ss[1] == 'bf16':
+            DTYPE = torch.bfloat16
+        else:
+            assert False, "currently rwkv-x strategy must be: cuda/cpu fp16/fp32/bf16"
+
+        # Load the model from the checkpoint
+        if os.path.exists(model_path):
+            ckpt = torch.load(model_path, map_location=DEVICE, weights_only=True)
+        else:
+            raise FileNotFoundError(f"Model path {model_path} does not exist.")
+
+        rwkv_state_dict = {k[5:]: v for k, v in ckpt.items() if k.startswith("rwkv.")}
+        moba_state_dict = {k[5:]: v for k, v in ckpt.items() if k.startswith("moba.")}
+
+        n_embd = rwkv_state_dict['emb.weight'].shape[1]
+        n_head = n_embd // 64
+        n_moba_layer = len({k.split('.')[0] for k in moba_state_dict if k[0].isdigit()})
+        config = MOBAConfig(
+            n_moba_layer=n_moba_layer,
+            n_head=n_head,
+            n_embd=n_embd,
+            moba_chunk_size=2048,
+            moba_topk=3
+        )
+        return rwkv_state_dict, moba_state_dict, config
+

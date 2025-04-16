@@ -29,6 +29,9 @@ def parse_config():
     group = parser.add_argument_group('moba')
     group.add_argument('--moba_chunk_size', type=int, default=2048, help='chunk size for moba')
     group.add_argument('--moba_topk', type=int, default=3, help='topk for moba')
+    # add a group for plot
+    group = parser.add_argument_group('plot')
+    group.add_argument('--heatmap_data', type=str, default='')
 
     args = parser.parse_args()
     return args
@@ -85,6 +88,52 @@ def passkey_retrieval_test(model, tokenizer, device, n_garbage_prefix, n_garbage
     return is_correct, len_token
 
 
+def plot_heatmap(df, args):
+    cmap = LinearSegmentedColormap.from_list("custom_cmap", ["#F0496E", "#EBB839", "#0CD79F"])
+    
+    pivot_table = pd.pivot_table(df, values='Score', index=['Document Depth', 'Context Length'], aggfunc='mean').reset_index() # This will aggregate
+    pivot_table = pivot_table.pivot(index="Document Depth", columns="Context Length", values="Score")
+    # Create the heatmap with better aesthetics
+    plt.figure(figsize=(17.5, 8))  # Can adjust these dimensions as needed
+    ax = sns.heatmap(
+        pivot_table,
+        vmin=0,
+        vmax=100,
+        fmt="g",
+        cmap=cmap,
+        cbar_kws={'label': 'Score'},
+        linewidths=1.5,            # 设置线条宽度
+        linecolor='white'          # 设置线条颜色为白色
+    )
+
+    # Title
+    #plt.title('Needle in a Haystack Evaluation', fontsize=24)
+
+    # 替换 X 轴标签为形如 '4k', '8k' 的格式
+    xticks = ax.get_xticks()
+    xtick_labels = pivot_table.columns.tolist()
+    xtick_labels_formatted = [f"{int(x)//1000}K" for x in xtick_labels]
+    ax.set_xticklabels(xtick_labels_formatted, fontsize=16)
+
+    # More aesthetics
+    plt.xlabel('Context Length', fontsize=22)  # X-axis label with larger font
+    plt.ylabel('Answer Depth (%)', fontsize=22)  # Y-axis label with larger font
+    #plt.xticks(rotation=45, fontsize=16)  # Rotate and enlarge x-axis labels
+    plt.yticks(rotation=0, fontsize=16)  # Enlarge y-axis labels
+    # 设置 colorbar 字体大小
+    cbar = ax.collections[0].colorbar
+    cbar.ax.tick_params(labelsize=16)  # 增大 colorbar 的刻度字体
+    cbar.set_label('Score', fontsize=22)  # 增大 colorbar 的标题字体
+    plt.tight_layout()  # Fits everything neatly into the figure area
+    # save
+    log_dir = Path(args.log_name)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    base_name = Path(args.base_model).stem
+    output_stem = log_dir / f"{base_name}_heatmap_{args.max_tokens}"
+    plt.savefig(f"{output_stem}.png", dpi=300, bbox_inches='tight')
+    return output_stem
+
+
 def main(args):
     from load_utils import load_rwkvx
     device = torch.device(args.device)
@@ -111,6 +160,7 @@ def main(args):
                 is_correct, len_tokens = passkey_retrieval_test(model, tokenizer, device, n_garbage_prefix, n_garbage=n_garbage, seed=k)
                 passed_tests += is_correct
                 total_tokens += len_tokens
+                torch.cuda.empty_cache()
             avg_tokens = total_tokens//args.num_tests if avg_tokens is None else avg_tokens
             accuracy = float(passed_tests)/args.num_tests
             depth = n_garbage_prefix/n_garbage
@@ -118,45 +168,15 @@ def main(args):
             result = {"Context Length": context_length, "Document Depth": round(depth*100, -1),"Score": accuracy * 100}
             all_accuries.append(result)
     df = pd.DataFrame(all_accuries)
-    cmap = LinearSegmentedColormap.from_list("custom_cmap", ["#F0496E", "#EBB839", "#0CD79F"])
-    
-    pivot_table = pd.pivot_table(df, values='Score', index=['Document Depth', 'Context Length'], aggfunc='mean').reset_index() # This will aggregate
-    pivot_table = pivot_table.pivot(index="Document Depth", columns="Context Length", values="Score")
-    # Create the heatmap with better aesthetics
-    plt.figure(figsize=(17.5, 8))  # Can adjust these dimensions as needed
-    ax = sns.heatmap(
-        pivot_table,
-        vmin=0,
-        vmax=100,
-        fmt="g",
-        cmap=cmap,
-        cbar_kws={'label': 'Score'},
-        linewidths=1.5,            # 设置线条宽度
-        linecolor='white'          # 设置线条颜色为白色
-    )
-
-    # Title
-    plt.title('Needle in a Haystack Evaluation', fontsize=24)
-
-    # More aesthetics
-    plt.xlabel('Context Length', fontsize=22)  # X-axis label with larger font
-    plt.ylabel('Answer Depth (%)', fontsize=22)  # Y-axis label with larger font
-    plt.xticks(rotation=45, fontsize=16)  # Rotate and enlarge x-axis labels
-    plt.yticks(rotation=0, fontsize=16)  # Enlarge y-axis labels
-    # 设置 colorbar 字体大小
-    cbar = ax.collections[0].colorbar
-    cbar.ax.tick_params(labelsize=16)  # 增大 colorbar 的刻度字体
-    cbar.set_label('Score', fontsize=22)  # 增大 colorbar 的标题字体
-    plt.tight_layout()  # Fits everything neatly into the figure area
-    # save
-    log_dir = Path(args.log_name)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    base_name = Path(args.base_model).stem
-    output_stem = log_dir / f"{base_name}_heatmap_{args.max_tokens}"
-    plt.savefig(f"{output_stem}.png", dpi=300, bbox_inches='tight')
+    # plot heatmap
+    output_stem = plot_heatmap(df, args)
     df.to_csv(f"{output_stem}.csv", index=False)
     
     
 if __name__ == "__main__":
     args = parse_config()
-    main(args)
+    if args.heatmap_data:
+        df = pd.read_csv(args.heatmap_data)
+        plot_heatmap(df, args)
+    else:
+        main(args)
