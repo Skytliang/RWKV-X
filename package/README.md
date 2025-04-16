@@ -1,12 +1,9 @@
-The RWKV Language Model
+The RWKV-X Language Model
 
-https://github.com/BlinkDL/RWKV-LM
-
-https://github.com/BlinkDL/ChatRWKV
+https://github.com/howard-hou/RWKV-X
 
 ```python
 # !!! set these before import RWKV !!!
-os.environ['RWKV_JIT_ON'] = '1' # '1' for better speed
 os.environ["RWKV_CUDA_ON"] = '0' # '1' to compile CUDA kernel (10x faster), requires c++ compiler & cuda libraries
 
 ########################################################################################################
@@ -47,14 +44,13 @@ os.environ["RWKV_CUDA_ON"] = '0' # '1' to compile CUDA kernel (10x faster), requ
 #
 # ########################################################################################################
 
-from rwkv.model import RWKV
-from rwkv.utils import PIPELINE, PIPELINE_ARGS
+from rwkvx.model import RWKV_X
+from rwkvx.utils import PIPELINE, PIPELINE_ARGS
 
-# download models: https://huggingface.co/BlinkDL
-model = RWKV(model='RWKV-x060-World-1B6-v2.1-20240328-ctx4096', strategy='cpu fp32')
+# download models: https://huggingface.co/howard-hou/RWKV-X/tree/main
+model = RWKV_X(model='RWKV-x060-World-1B6-v2.1-20240328-ctx4096', strategy='cpu fp32')
 
 pipeline = PIPELINE(model, "rwkv_vocab_v20230424") # for "world" models
-# pipeline = PIPELINE(model, "20B_tokenizer.json") # for "pile" models, 20B_tokenizer.json is in https://github.com/BlinkDL/ChatRWKV
 
 ctx = "\nIn a shocking finding, scientist discovered a herd of dragons living in a remote, previously unexplored valley, in Tibet. Even more surprising to the researchers was the fact that the dragons spoke perfect Chinese."
 print(ctx, end='')
