@@ -2,6 +2,7 @@
 # The RWKV-X Language Model - https://github.com/add_later
 ########################################################################################################
 
+from dataclasses import dataclass
 import os, types
 import torch
 import torch.nn as nn
@@ -178,7 +179,8 @@ class RWKV_x070(MyModule):
             if 'key.weight' in k or 'value.weight' in k or 'receptance.weight' in k or 'output.weight' in k or 'head.weight' in k:
                 z[k] = z[k].t()
             z[k] = z[k].squeeze().to(dtype=DTYPE)
-            if k.endswith('att.r_k'): z[k] = z[k].flatten()
+            if k.endswith('att.r_k'): 
+                z[k] = z[k].flatten()
 
         self.n_embd = args.n_embd
         self.n_layer = args.n_layer
@@ -188,6 +190,13 @@ class RWKV_x070(MyModule):
         z['blocks.0.att.v1'] = z['blocks.0.att.a1'] # actually ignored
         z['blocks.0.att.v2'] = z['blocks.0.att.a2'] # actually ignored
 
+        # core modification: construct block list
+        self.blocks = nn.ModuleList([
+            RWKVBlock(i, z, self.n_head, self.head_size, self.n_embd)
+            for i in range(self.n_layer)
+        ])
+
+    @torch.inference_mode()
     def forward(self, idx, state, full_output=False):
         if state == None:
             state = [None for _ in range(self.args.n_layer * 3)]
@@ -204,70 +213,87 @@ class RWKV_x070(MyModule):
         else:
             return self.forward_one(idx, state)
 
-    @MyFunction
-    def forward_one(self, idx:int, state:List[torch.Tensor]):
-        with torch.no_grad(): 
-            z = self.z
-            x = z['emb.weight'][idx]
+    @torch.inference_mode()
+    def forward_one(self, idx: int, state: List[torch.Tensor]):
+        z = self.z
+        x = z['emb.weight'][idx]
+        v_first = torch.empty_like(x)
 
-            v_first = torch.empty_like(x)
-            for i in range(self.n_layer):
-                bbb = f'blocks.{i}.'
-                att = f'blocks.{i}.att.'
-                ffn = f'blocks.{i}.ffn.'
+        for block in self.blocks:
+            x, state, v_first = block.forward_one(x, state, v_first)
 
-                xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
+        x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
+        x = x @ z['head.weight']
+        return x, state
 
-                xx, state[i*3+0], state[i*3+1], v_first = RWKV_x070_TMix_one(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
-                    z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
-                    z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], z[att+'v0'], z[att+'v1'], z[att+'v2'],
-                    z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
-                    z[att+'receptance.weight'], z[att+'key.weight'], z[att+'value.weight'], z[att+'output.weight'],
-                    z[att+'ln_x.weight'], z[att+'ln_x.bias'])
-                x = x + xx
+    @torch.inference_mode()
+    def forward_seq(self, idx: List[int], state: List[torch.Tensor], full_output: bool = False):
+        z = self.z
+        x = z['emb.weight'][idx]
+        v_first = torch.empty_like(x)
 
-                xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln2.weight'], bias=z[bbb+'ln2.bias'])
+        for block in self.blocks:
+            x, state, v_first = block.forward_seq(x, state, v_first)
 
-                xx, state[i*3+2] = RWKV_x070_CMix_one(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
-                x = x + xx
-            
-                # if math.isnan(torch.min(x).item()): print(idx, i)
+        if not full_output:
+            x = x[-1]
 
-            x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
-            x = x @ z['head.weight']
-            return x, state
+        x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
+        x = x @ z['head.weight']
+        return x, state
 
-    @MyFunction
-    def forward_seq(self, idx:List[int], state:List[torch.Tensor], full_output:bool=False):
-        with torch.no_grad(): 
-            z = self.z
-            x = z['emb.weight'][idx]
+        
 
-            v_first = torch.empty_like(x)
-            for i in range(self.n_layer):
-                bbb = f'blocks.{i}.'
-                att = f'blocks.{i}.att.'
-                ffn = f'blocks.{i}.ffn.'
+class RWKVBlock(nn.Module):
+    def __init__(self, layer_id, z, n_head, head_size, n_embd):
+        super().__init__()
+        self.layer_id = layer_id
+        self.z = z
+        self.n_head = n_head
+        self.head_size = head_size
+        self.n_embd = n_embd
 
-                xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
+    def forward_one(self, x, state, v_first):
+        i = self.layer_id
+        z = self.z
+        bbb, att, ffn = f'blocks.{i}.', f'blocks.{i}.att.', f'blocks.{i}.ffn.'
 
-                xx, state[i*3+0], state[i*3+1], v_first = RWKV_x070_TMix_seq(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
-                    z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
-                    z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], z[att+'v0'], z[att+'v1'], z[att+'v2'],
-                    z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
-                    z[att+'receptance.weight'], z[att+'key.weight'], z[att+'value.weight'], z[att+'output.weight'],
-                    z[att+'ln_x.weight'], z[att+'ln_x.bias'])
-                x = x + xx
+        xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
+        xx, state[i*3+0], state[i*3+1], v_first = RWKV_x070_TMix_one(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
+            z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
+            z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], z[att+'v0'], z[att+'v1'], z[att+'v2'],
+            z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
+            z[att+'receptance.weight'], z[att+'key.weight'], z[att+'value.weight'], z[att+'output.weight'],
+            z[att+'ln_x.weight'], z[att+'ln_x.bias'])
+        x = x + xx
 
-                xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln2.weight'], bias=z[bbb+'ln2.bias'])
+        xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln2.weight'], bias=z[bbb+'ln2.bias'])
+        xx, state[i*3+2] = RWKV_x070_CMix_one(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
+        x = x + xx
 
-                xx, state[i*3+2] = RWKV_x070_CMix_seq(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
-                x = x + xx
-            
-            if not full_output: x = x[-1,:]
-            x = F.layer_norm(x, (self.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
-            x = x @ z['head.weight']
-            return x, state
+        return x, state, v_first
+
+    def forward_seq(self, x, state, v_first):
+        i = self.layer_id
+        z = self.z
+        bbb, att, ffn = f'blocks.{i}.', f'blocks.{i}.att.', f'blocks.{i}.ffn.'
+
+        xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln1.weight'], bias=z[bbb+'ln1.bias'])
+
+        xx, state[i*3+0], state[i*3+1], v_first = RWKV_x070_TMix_seq(i, self.n_head, self.head_size, xx, state[i*3+0], v_first, state[i*3+1],
+            z[att+'x_r'], z[att+'x_w'], z[att+'x_k'], z[att+'x_v'], z[att+'x_a'], z[att+'x_g'],
+            z[att+'w0'], z[att+'w1'], z[att+'w2'], z[att+'a0'], z[att+'a1'], z[att+'a2'], z[att+'v0'], z[att+'v1'], z[att+'v2'],
+            z[att+'g1'], z[att+'g2'], z[att+'k_k'], z[att+'k_a'], z[att+'r_k'],
+            z[att+'receptance.weight'], z[att+'key.weight'], z[att+'value.weight'], z[att+'output.weight'],
+            z[att+'ln_x.weight'], z[att+'ln_x.bias'])
+        x = x + xx
+
+        xx = F.layer_norm(x, (self.n_embd,), weight=z[bbb+'ln2.weight'], bias=z[bbb+'ln2.bias'])
+        xx, state[i*3+2] = RWKV_x070_CMix_seq(xx, state[i*3+2], z[ffn+'x_k'], z[ffn+'key.weight'], z[ffn+'value.weight'])
+        x = x + xx
+
+        return x, state, v_first
+
 
 ################################## Sparse Attention ##############################################
 class CausalSparseAttention(nn.Module):
@@ -288,50 +314,62 @@ class CausalSparseAttention(nn.Module):
 
     def forward_one(self, x, k_cache, v_cache):
         ''' used for decode, only one token at a time
-        input: x: (1, 1, C)
+        input: x: (C)
         '''
+        if len(x.shape) == 1:
+            x = x.unsqueeze(0).unsqueeze(0) # (C) -> (1, 1, C)
         assert x.size(0) == 1, "batch size must be 1"
         assert x.size(1) == 1, "sequence length must be 1"
         C = x.size(-1)
         q, k, v = self.receptance(x), self.key(x), self.value(x)
         # split kv cache into two parts
         KT = k_cache.size(1)
-        reminder = k_cache.size(1) % self.moba_chunk_size
-        k_chunk, k_reminder = k_cache[:, :KT-reminder, :], k_cache[:, KT-reminder:, :]
-        v_chunk, v_reminder = v_cache[:, :KT-reminder, :], v_cache[:, KT-reminder:, :]
-        # split k, v into chunks
-        num_chunks = k_chunk.size(1) // self.moba_chunk_size
-        k_chunk = k_chunk.view(1, num_chunks, self.moba_chunk_size, C)
-        v_chunk = v_chunk.view(1, num_chunks, self.moba_chunk_size, C)
-        # get chunk key
-        chunk_key = k_chunk.mean(dim=2) # (1, num_chunks, C)
-        # get top-k chunk
-        chunk_score = torch.einsum('bqc,bkc->bqk', q, chunk_key) # (1, 1, num_chunks)
-        topk_chunk_indices = torch.topk(chunk_score, self.moba_topk, dim=-1).indices.squeeze() # (moba_topk)
-        # get top-k chunk key and value
-        topk_k = k_chunk[:, topk_chunk_indices].view(1, -1, C) # (1, moba_topk * moba_chunk_size, C)
-        topk_v = v_chunk[:, topk_chunk_indices].view(1, -1, C) # (1, moba_topk * moba_chunk_size, C)
-        # combine with reminder and current k, v
-        k_comb = torch.cat((topk_k, k_reminder, k), dim=1)
-        v_comb = torch.cat((topk_v, v_reminder, v), dim=1)
-        # calculate attention and output
-        new_T = k_comb.size(1)
-        q = q.view(1, 1, self.n_head, C // self.n_head).transpose(1, 2)
-        k_comb = k_comb.view(1, new_T, self.n_head, C // self.n_head).transpose(1, 2)
-        v_comb = v_comb.view(1, new_T, self.n_head, C // self.n_head).transpose(1, 2)
-        y = F.scaled_dot_product_attention(q, k_comb, v_comb)
-        y = y.transpose(1, 2).contiguous().view(1, 1, C)
-        y = self.output(y)
-        # update k, v cache
-        k_cache = torch.cat((k_cache, k), dim=1)
-        v_cache = torch.cat((v_cache, v), dim=1)
-        return y, k_cache, v_cache
+        if KT <= self.window_size: # for short sequence, use full attention
+            k_cache = torch.cat((k_cache, k), dim=1)
+            v_cache = torch.cat((v_cache, v), dim=1)
+            y = F.scaled_dot_product_attention(q, k_cache, v_cache)
+            y = y.transpose(1, 2).contiguous().view(C) # (1, 1, C) -> (C)
+            y = self.output(y)
+            return y, k_cache, v_cache
+        else:
+            reminder = k_cache.size(1) % self.moba_chunk_size
+            k_chunk, k_reminder = k_cache[:, :KT-reminder, :], k_cache[:, KT-reminder:, :]
+            v_chunk, v_reminder = v_cache[:, :KT-reminder, :], v_cache[:, KT-reminder:, :]
+            # split k, v into chunks
+            num_chunks = k_chunk.size(1) // self.moba_chunk_size
+            k_chunk = k_chunk.view(1, num_chunks, self.moba_chunk_size, C)
+            v_chunk = v_chunk.view(1, num_chunks, self.moba_chunk_size, C)
+            # get chunk key
+            chunk_key = k_chunk.mean(dim=2) # (1, num_chunks, C)
+            # get top-k chunk
+            chunk_score = torch.einsum('bqc,bkc->bqk', q, chunk_key) # (1, 1, num_chunks)
+            topk_chunk_indices = torch.topk(chunk_score, self.moba_topk, dim=-1).indices.squeeze() # (moba_topk)
+            # get top-k chunk key and value
+            topk_k = k_chunk[:, topk_chunk_indices].view(1, -1, C) # (1, moba_topk * moba_chunk_size, C)
+            topk_v = v_chunk[:, topk_chunk_indices].view(1, -1, C) # (1, moba_topk * moba_chunk_size, C)
+            # combine with reminder and current k, v
+            k_comb = torch.cat((topk_k, k_reminder, k), dim=1)
+            v_comb = torch.cat((topk_v, v_reminder, v), dim=1)
+            # calculate attention and output
+            new_T = k_comb.size(1)
+            q = q.view(1, 1, self.n_head, C // self.n_head).transpose(1, 2)
+            k_comb = k_comb.view(1, new_T, self.n_head, C // self.n_head).transpose(1, 2)
+            v_comb = v_comb.view(1, new_T, self.n_head, C // self.n_head).transpose(1, 2)
+            y = F.scaled_dot_product_attention(q, k_comb, v_comb)
+            y = y.transpose(1, 2).contiguous().view(C) # (1, 1, C) -> (C)
+            y = self.output(y)
+            # update k, v cache
+            k_cache = torch.cat((k_cache, k), dim=1)
+            v_cache = torch.cat((v_cache, v), dim=1)
+            return y, k_cache, v_cache
 
     def forward_seq(self, x):
         '''
-        input: x: (B, T, C)
-        output: y: (B, T, C) and k, v cache (B, T, C)
+        input: x: (T, C)
+        output: y: (T, C) and k, v cache (1, T, C)
         '''
+        if len(x.shape) == 2:
+            x = x.unsqueeze(0) # (T, C) -> (1, T, C)
         B, T, C = x.size()
         if T <= self.window_size: # for short sequence, use full attention
             q, k, v = self.receptance(x), self.key(x), self.value(x)
@@ -343,7 +381,7 @@ class CausalSparseAttention(nn.Module):
             k = k.transpose(1, 2).contiguous().view(B, T, C)
             v = v.transpose(1, 2).contiguous().view(B, T, C)
             # output projection
-            y = self.output(y)
+            y = self.output(y).squeeze(0) # (1, T, C) -> (T, C)
             return y, k, v
         else:
             # pad on right side to match the chunk size
@@ -375,6 +413,8 @@ class CausalSparseAttention(nn.Module):
                 y = y[:, :-pad_size, :]
                 k = k[:, :-pad_size, :]
                 v = v[:, :-pad_size, :]
+            # remove extra dimension
+            y = y.squeeze(0)
             return y, k, v
 
 
@@ -387,14 +427,19 @@ class RWKV_CMix_x070(nn.Module):
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
         self.key = nn.Linear(n_embd, n_embd * 4, bias=False)
         self.value = nn.Linear(n_embd * 4, n_embd, bias=False)
-
-    def forward(self, x):
-        xx = self.time_shift(x) - x
+        self.x_k = nn.Parameter(torch.ones(1, 1, n_embd))
+    
+    def forward(self, x, state):
+        if len(x.shape) == 1:
+            xx = state["ffn_x_prev"] - x
+            k = x + xx * self.x_k.squeeze()
+            k = torch.relu(self.key(k)) ** 2
+            return self.value(k), x
         
-        k = x + xx * self.x_k
+        xx = torch.cat((state["ffn_x_prev"].unsqueeze(0), x[:-1,:])) - x
+        k = x + xx * self.x_k.squeeze(0) # (1, 1, C) -> (1, C)
         k = torch.relu(self.key(k)) ** 2
-
-        return self.value(k)
+        return self.value(k), x[-1,:]
     
 
 class SparseAttentionBlock(nn.Module):
@@ -402,34 +447,49 @@ class SparseAttentionBlock(nn.Module):
         super().__init__()
         self.ln1 = nn.LayerNorm(config.n_embd)
         self.ln2 = nn.LayerNorm(config.n_embd)
-
         self.att = CausalSparseAttention(config)
         self.ffn = RWKV_CMix_x070(config.n_embd)
         
-    def forward(self, x):
-        x = x + self.att(self.ln1(x))
-        x = x + self.ffn(self.ln2(x))
-        return x
+    def forward_seq(self, x, state):
+        xx, state['k_cache'], state['v_cache'] = self.att.forward_seq(self.ln1(x))
+        x = x + xx
+        xx, state['ffn_x_prev'] = self.ffn(self.ln2(x), state)
+        x = x + xx
+        return x, state
+    
+    def forward_one(self, x, state):
+        '''
+        x: (C)
+        '''
+        xx, state['k_cache'], state['v_cache'] = self.att.forward_one(self.ln1(x), state['k_cache'], state['v_cache'])
+        x = x + xx
+        xx, state['ffn_x_prev'] = self.ffn(self.ln2(x), state)
+        x = x + xx
+        return x, state
 
 @dataclass
-class MOBAConfig:
+class RWKV_X_Config:
+    n_rwkv_layer: int
     n_moba_layer: int
     n_head: int
     n_embd: int
     moba_chunk_size: int = 2048
     moba_topk: int = 3
+    head_size: int = 64
 
 class RWKV_X(nn.Module):
     def __init__(self, model_path, strategy):
         super().__init__()
         print(f'Loading {model_path} ({strategy})\n')
-        global DTYPE, DEVICE
         rwkv_state_dict, moba_state_dict, config = self.load_from_ckpt(model_path, strategy)
-        self.rwkv = RWKV_x070(rwkv_state_dict, strategy)
-        self.moba = nn.ModuleList([SparseAttentionBlock(config) for i in range(config.n_moba_layer)]).to(device=DEVICE)
+        self.rwkv = RWKV_x070(rwkv_state_dict).to(device=DEVICE).to(DTYPE)
+        self.moba = nn.ModuleList([SparseAttentionBlock(config) for i in range(config.n_moba_layer)])
+        self.moba.to(device=DEVICE).to(DTYPE)
         self.moba.load_state_dict(moba_state_dict, strict=True)
+        self.config = config
 
     def load_from_ckpt(self, model_path, strategy):
+        global DTYPE, DEVICE
         ss = strategy.split(' ')
         DEVICE = ss[0]
         if ss[1] == 'fp16':
@@ -452,8 +512,10 @@ class RWKV_X(nn.Module):
 
         n_embd = rwkv_state_dict['emb.weight'].shape[1]
         n_head = n_embd // 64
+        n_rwkv_layer = len({k.split('.')[1] for k in rwkv_state_dict if k.startswith("blocks.")})
         n_moba_layer = len({k.split('.')[0] for k in moba_state_dict if k[0].isdigit()})
-        config = MOBAConfig(
+        config = RWKV_X_Config(
+            n_rwkv_layer=n_rwkv_layer,
             n_moba_layer=n_moba_layer,
             n_head=n_head,
             n_embd=n_embd,
@@ -462,3 +524,80 @@ class RWKV_X(nn.Module):
         )
         return rwkv_state_dict, moba_state_dict, config
 
+
+    @torch.inference_mode()
+    def forward(self, idx, state, full_output=False):
+        if state == None:
+            rwkv_state = [None for _ in range(self.config.n_rwkv_layer * 3)]
+            for i in range(self.config.n_rwkv_layer): # state: 0=att_x_prev 1=att_kv 2=ffn_x_prev
+                rwkv_state[i*3+0] = torch.zeros(self.config.n_embd, dtype=DTYPE, requires_grad=False, device=DEVICE)
+                rwkv_state[i*3+1] = torch.zeros((self.config.n_embd // self.config.head_size, self.config.head_size, self.config.head_size), dtype=torch.float, requires_grad=False, device=DEVICE)
+                rwkv_state[i*3+2] = torch.zeros(self.config.n_embd, dtype=DTYPE, requires_grad=False, device=DEVICE)
+            moba_state = []
+            for _ in range(self.config.n_moba_layer):
+                moba_state.append({
+                    'k_cache': torch.zeros((1, 0, self.config.n_embd), dtype=DTYPE, device=DEVICE, requires_grad=False),
+                    'v_cache': torch.zeros((1, 0, self.config.n_embd), dtype=DTYPE, device=DEVICE, requires_grad=False),
+                    'ffn_x_prev':  torch.zeros(self.config.n_embd, dtype=DTYPE, requires_grad=False, device=DEVICE)
+                })
+            state = {'rwkv': rwkv_state, 'moba': moba_state}
+
+        if type(idx) is list:
+            if len(idx) > 1:
+                return self.forward_seq(idx, state, full_output)
+            else:
+                return self.forward_one(idx[0], state)
+        else:
+            return self.forward_one(idx, state)
+        
+    def forward_one(self, idx: int, state: dict):
+        z = self.rwkv.z
+        x = z['emb.weight'][idx]
+        v_first = torch.empty_like(x)
+
+        rwkv_id, moba_id = 0, 0
+        for block in self.get_block_exe_order():
+            if isinstance(block, RWKVBlock):
+                x, state['rwkv'], v_first = block.forward_one(x, state['rwkv'], v_first)
+                rwkv_id += 1
+            else:
+                x, state['moba'][moba_id] = block.forward_one(x, state['moba'][moba_id])
+                moba_id += 1
+
+        x = F.layer_norm(x, (self.config.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
+        x = x @ z['head.weight']
+        return x, state
+    
+    def forward_seq(self, idx: List[int], state: dict, full_output=False):
+        z = self.rwkv.z
+        x = z['emb.weight'][idx]
+        x_prev = x[0].clone()
+        v_first = torch.empty_like(x)
+
+        rwkv_id, moba_id = 0, 0
+        for block in self.get_block_exe_order():
+            if isinstance(block, RWKVBlock):
+                x, state['rwkv'], v_first = block.forward_seq(x, state['rwkv'], v_first)
+                rwkv_id += 1
+            else:
+                x, state['moba'][moba_id] = block.forward_seq(x, state['moba'][moba_id])
+                moba_id += 1
+
+        if not full_output:
+            x = x[-1]
+        x = F.layer_norm(x, (self.config.n_embd,), weight=z['ln_out.weight'], bias=z['ln_out.bias'])
+        x = x @ z['head.weight']
+        return x, state
+    
+    def get_block_exe_order(self):
+        if self.config.n_moba_layer == 0:
+            return self.rwkv.blocks
+        if self.config.n_moba_layer == 1:
+            blocks = self.rwkv.blocks + self.moba
+            return blocks
+        interval = len(self.rwkv.blocks) // self.config.n_moba_layer # 12 // 4 = 3
+        blocks = [] # [RWKVBlock * interval, MOBABlock, RWKVBlock * interval, MOBABlock, ...]
+        for i in range(self.config.n_moba_layer):
+            blocks += self.rwkv.blocks[i * interval: (i + 1) * interval]
+            blocks.append(self.moba[i])
+        return blocks
