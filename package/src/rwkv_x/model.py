@@ -380,12 +380,16 @@ class CausalSparseAttention(nn.Module):
         CT = k_cache.size(1) # cache seq length
         if (T+CT) <= self.window_size: # for short sequence, use full attention
             q, k, v = self.receptance(x), self.key(x), self.value(x)
+            # prefix mask
+            causal_mask = torch.ones((T, T), dtype=torch.bool, device=x.device).tril(diagonal=0)
+            cache_mask = torch.ones((T, CT), dtype=torch.bool, device=x.device)
+            prefix_mask = torch.cat((cache_mask, causal_mask), dim=1)
             k_cache = torch.cat((k_cache, k), dim=1) # update k cache
             v_cache = torch.cat((v_cache, v), dim=1) # update v cache
             q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
             k_comb = k_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
             v_comb = v_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
-            y = F.scaled_dot_product_attention(q, k_comb, v_comb, is_causal=True) # flash attention
+            y = F.scaled_dot_product_attention(q, k_comb, v_comb, attn_mask=prefix_mask)
             y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
             # output projection
             y = self.output(y).squeeze(0) # (1, T, C) -> (T, C)
