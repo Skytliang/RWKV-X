@@ -46,8 +46,8 @@ os.environ["RWKV_CUDA_ON"] = '0' # '1' to compile CUDA kernel (10x faster), requ
 #
 # ########################################################################################################
 
-from rwkvx.model import RWKV_X
-from rwkvx.utils import PIPELINE, PIPELINE_ARGS
+from rwkv_x.model import RWKV_X
+from rwkv_x.utils import PIPELINE, PIPELINE_ARGS
 
 # download models: https://huggingface.co/howard-hou/RWKV-X/tree/main
 model = RWKV_X(model_path='RWKV-X-0.2B-64k-Base.pth', strategy='cpu fp32')
