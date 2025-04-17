@@ -4,6 +4,8 @@ https://github.com/howard-hou/RWKV-X
 
 ```python
 # !!! set these before import RWKV !!!
+import os
+
 os.environ["RWKV_CUDA_ON"] = '0' # '1' to compile CUDA kernel (10x faster), requires c++ compiler & cuda libraries
 
 ########################################################################################################
@@ -48,9 +50,9 @@ from rwkvx.model import RWKV_X
 from rwkvx.utils import PIPELINE, PIPELINE_ARGS
 
 # download models: https://huggingface.co/howard-hou/RWKV-X/tree/main
-model = RWKV_X(model='RWKV-x060-World-1B6-v2.1-20240328-ctx4096', strategy='cpu fp32')
+model = RWKV_X(model_path='RWKV-X-0.2B-64k-Base.pth', strategy='cpu fp32')
 
-pipeline = PIPELINE(model, "rwkv_vocab_v20230424") # for "world" models
+pipeline = PIPELINE(model) # for "world" models
 
 ctx = "\nIn a shocking finding, scientist discovered a herd of dragons living in a remote, previously unexplored valley, in Tibet. Even more surprising to the researchers was the fact that the dragons spoke perfect Chinese."
 print(ctx, end='')

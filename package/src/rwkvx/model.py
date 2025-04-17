@@ -363,27 +363,28 @@ class CausalSparseAttention(nn.Module):
             v_cache = torch.cat((v_cache, v), dim=1)
             return y, k_cache, v_cache
 
-    def forward_seq(self, x):
+    def forward_seq(self, x, k_cache, v_cache):
         '''
-        input: x: (T, C)
-        output: y: (T, C) and k, v cache (1, T, C)
+        input: x: (T, C) and k, v cache (1, CT, C)
+        output: y: (T, C) and k, v cache (1, CT+T, C)
         '''
         if len(x.shape) == 2:
             x = x.unsqueeze(0) # (T, C) -> (1, T, C)
         B, T, C = x.size()
-        if T <= self.window_size: # for short sequence, use full attention
+        CT = k_cache.size(1) # cache seq length
+        if (T+CT) <= self.window_size: # for short sequence, use full attention
             q, k, v = self.receptance(x), self.key(x), self.value(x)
-            k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+            k_cache = torch.cat((k_cache, k), dim=1) # update k cache
+            v_cache = torch.cat((v_cache, v), dim=1) # update v cache
             q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-            v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+            k = k_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
+            v = v_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
             y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
             y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
-            k = k.transpose(1, 2).contiguous().view(B, T, C)
-            v = v.transpose(1, 2).contiguous().view(B, T, C)
             # output projection
             y = self.output(y).squeeze(0) # (1, T, C) -> (T, C)
-            return y, k, v
-        else:
+            return y, k_cache, v_cache
+        else: # chunked attention ignoring the kv cache
             # pad on right side to match the chunk size
             pad_size = self.moba_chunk_size - (T % self.moba_chunk_size)
             if pad_size != self.moba_chunk_size:
@@ -415,7 +416,10 @@ class CausalSparseAttention(nn.Module):
                 v = v[:, :-pad_size, :]
             # remove extra dimension
             y = y.squeeze(0)
-            return y, k, v
+            # update k, v cache
+            k_cache = torch.cat((k_cache, k), dim=1)
+            v_cache = torch.cat((v_cache, v), dim=1)
+            return y, k_cache, v_cache
 
 
 ########################################################################################################
@@ -451,7 +455,9 @@ class SparseAttentionBlock(nn.Module):
         self.ffn = RWKV_CMix_x070(config.n_embd)
         
     def forward_seq(self, x, state):
-        xx, state['k_cache'], state['v_cache'] = self.att.forward_seq(self.ln1(x))
+        xx, state['k_cache'], state['v_cache'] = self.att.forward_seq(
+            self.ln1(x), state['k_cache'], state['v_cache']
+            )
         x = x + xx
         xx, state['ffn_x_prev'] = self.ffn(self.ln2(x), state)
         x = x + xx
@@ -461,7 +467,9 @@ class SparseAttentionBlock(nn.Module):
         '''
         x: (C)
         '''
-        xx, state['k_cache'], state['v_cache'] = self.att.forward_one(self.ln1(x), state['k_cache'], state['v_cache'])
+        xx, state['k_cache'], state['v_cache'] = self.att.forward_one(
+            self.ln1(x), state['k_cache'], state['v_cache']
+            )
         x = x + xx
         xx, state['ffn_x_prev'] = self.ffn(self.ln2(x), state)
         x = x + xx

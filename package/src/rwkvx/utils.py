@@ -90,9 +90,10 @@ class PIPELINE():
             # forward & adjust prob.
             tokens = self.encode(ctx) if i == 0 else [token]
             while len(tokens) > 0:
-                out, state = self.model.forward(tokens[:args.chunk_len], state)
-                tokens = tokens[args.chunk_len:]
-                
+                out, state = self.model.forward(tokens, state)
+                tokens = []
+
+            out = out.clone() # avoid InferenceMode restriction
             for n in args.token_ban:
                 out[n] = -float('inf')
             for n in occurrence:
