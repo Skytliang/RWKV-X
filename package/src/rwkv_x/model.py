@@ -328,10 +328,12 @@ class CausalSparseAttention(nn.Module):
         if CT <= self.window_size: # for short sequence, use full attention
             k_cache = torch.cat((k_cache, k), dim=1) # update k cache
             v_cache = torch.cat((v_cache, v), dim=1) # update v cache
-            q = q.view(1, 1, self.n_head, C // self.n_head).transpose(1, 2) # (1, 1, C) -> (1, 1, nh, hs)
-            k = k_cache.view(1, CT+1, self.n_head, C // self.n_head).transpose(1, 2) # (1, nh, CT+1, hs)
-            v = v_cache.view(1, CT+1, self.n_head, C // self.n_head).transpose(1, 2) # (1, nh, CT+1, hs)
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+            q = q.view(1, 1, self.n_head, C // self.n_head).transpose(1, 2) # (1, 1, C) -> (1, nh, 1, hs)
+            k_comb = k_cache.view(1, CT+1, self.n_head, C // self.n_head).transpose(1, 2) # (1, nh, CT+1, hs)
+            v_comb = v_cache.view(1, CT+1, self.n_head, C // self.n_head).transpose(1, 2) # (1, nh, CT+1, hs)
+            # !!! super be careful here, the attention is not causal !!!
+            # is_causal=True -> torch.ones(L, S, dtype=torch.bool).tril(diagonal=0) -> [1， S] -> [1, 0, 0, 0, ...]
+            y = F.scaled_dot_product_attention(q, k_comb, v_comb)
             y = y.transpose(1, 2).contiguous().view(C) # (1, nh, 1, hs) -> (1, 1, nh, hs) -> (C)
             y = self.output(y)
             return y, k_cache, v_cache
@@ -381,9 +383,9 @@ class CausalSparseAttention(nn.Module):
             k_cache = torch.cat((k_cache, k), dim=1) # update k cache
             v_cache = torch.cat((v_cache, v), dim=1) # update v cache
             q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-            k = k_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
-            v = v_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
+            k_comb = k_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
+            v_comb = v_cache.view(B, CT+T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, CT+T, hs)
+            y = F.scaled_dot_product_attention(q, k_comb, v_comb, is_causal=True) # flash attention
             y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
             # output projection
             y = self.output(y).squeeze(0) # (1, T, C) -> (T, C)
