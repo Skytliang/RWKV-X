@@ -361,7 +361,8 @@ class CausalSparseAttention(nn.Module):
             q = q.view(1, 1, self.n_head, C // self.n_head).transpose(1, 2)
             k_comb = k_comb.view(1, new_T, self.n_head, C // self.n_head).transpose(1, 2)
             v_comb = v_comb.view(1, new_T, self.n_head, C // self.n_head).transpose(1, 2)
-            y = F.scaled_dot_product_attention(q, k_comb, v_comb, is_causal=True)
+            # !!! super be careful, the attention here can not be causal !!!
+            y = F.scaled_dot_product_attention(q, k_comb, v_comb)
             y = y.transpose(1, 2).contiguous().view(C) # (1, 1, C) -> (C)
             y = self.output(y)
             # update k, v cache
