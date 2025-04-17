@@ -20,18 +20,11 @@ class PIPELINE_ARGS():
         self.chunk_len = chunk_len # split input into chunks to save VRAM (shorter -> slower)
 
 class PIPELINE():
-    def __init__(self, model, WORD_NAME):
+    def __init__(self, model):
         self.model = model
-        if WORD_NAME == 'cl100k_base':
-            import tiktoken
-            self.tokenizer = tiktoken.get_encoding(WORD_NAME)
-        elif WORD_NAME == 'rwkv_vocab_v20230424':
-            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            from rwkv_tokenizer import TRIE_TOKENIZER
-            self.tokenizer = TRIE_TOKENIZER(os.path.dirname(os.path.abspath(__file__)) + '/rwkv_vocab_v20230424.txt')        
-        else:
-            from tokenizers import Tokenizer
-            self.tokenizer = Tokenizer.from_file(WORD_NAME)
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from rwkv_tokenizer import TRIE_TOKENIZER
+        self.tokenizer = TRIE_TOKENIZER(os.path.dirname(os.path.abspath(__file__)) + '/rwkv_vocab_v20230424.txt')        
 
     def refine_context(self, context):
         context = context.strip().split('\n')

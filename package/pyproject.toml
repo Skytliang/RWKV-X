@@ -1,10 +1,10 @@
 [project]
-name = "rwkv"
-version = "0.8.28"
+name = "rwkv-x"
+version = "0.0.1"
 authors = [
-  { name="Bo PENG" },
+  { name="Haowen HOU" },
 ]
-description = "The RWKV Language Model"
+description = "The RWKV-X Language Model"
 readme = "README.md"
 requires-python = ">=3.7"
 classifiers = [
@@ -12,10 +12,8 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
-dependencies = [
-  'tokenizers >= 0.13.2',
-]
+dependencies = []
 
 [project.urls]
-"Homepage" = "https://github.com/BlinkDL/ChatRWKV"
-"Bug Tracker" = "https://github.com/BlinkDL/ChatRWKV/issues"
+"Homepage" = "https://github.com/howard-hou/RWKV-X"
+"Bug Tracker" = "https://github.com/howard-hou/RWKV-X/issues"

@@ -1,2 +1,2 @@
-include src/rwkv/cuda/*
-include src/rwkv/*.txt
+include src/rwkvx/cuda/*
+include src/rwkvx/*.txt
