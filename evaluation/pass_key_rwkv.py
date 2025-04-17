@@ -84,6 +84,50 @@ def passkey_retrieval_test(model, tokenizer, device, n_garbage_prefix, n_garbage
     is_correct = (model_answer == gold_answer)
     return is_correct, len_token
 
+def plot_heatmap(df, args):
+    cmap = LinearSegmentedColormap.from_list("custom_cmap", ["#F0496E", "#EBB839", "#0CD79F"])
+    
+    pivot_table = pd.pivot_table(df, values='Score', index=['Document Depth', 'Context Length'], aggfunc='mean').reset_index() # This will aggregate
+    pivot_table = pivot_table.pivot(index="Document Depth", columns="Context Length", values="Score")
+    # Create the heatmap with better aesthetics
+    plt.figure(figsize=(17.5, 8))  # Can adjust these dimensions as needed
+    ax = sns.heatmap(
+        pivot_table,
+        vmin=0,
+        vmax=100,
+        fmt="g",
+        cmap=cmap,
+        cbar_kws={'label': 'Score'},
+        linewidths=1.5,            # 设置线条宽度
+        linecolor='white'          # 设置线条颜色为白色
+    )
+
+    # Title
+    #plt.title('Needle in a Haystack Evaluation', fontsize=24)
+
+    # 替换 X 轴标签为形如 '4k', '8k' 的格式
+    xticks = ax.get_xticks()
+    xtick_labels = pivot_table.columns.tolist()
+    xtick_labels_formatted = [f"{int(x)//1000}K" for x in xtick_labels]
+    ax.set_xticklabels(xtick_labels_formatted, fontsize=16)
+
+    # More aesthetics
+    plt.xlabel('Context Length', fontsize=22)  # X-axis label with larger font
+    plt.ylabel('Answer Depth (%)', fontsize=22)  # Y-axis label with larger font
+    #plt.xticks(rotation=45, fontsize=16)  # Rotate and enlarge x-axis labels
+    plt.yticks(rotation=0, fontsize=16)  # Enlarge y-axis labels
+    # 设置 colorbar 字体大小
+    cbar = ax.collections[0].colorbar
+    cbar.ax.tick_params(labelsize=16)  # 增大 colorbar 的刻度字体
+    cbar.set_label('Score', fontsize=22)  # 增大 colorbar 的标题字体
+    plt.tight_layout()  # Fits everything neatly into the figure area
+    # save
+    log_dir = Path(args.log_name)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    base_name = Path(args.base_model).stem
+    output_stem = log_dir / f"{base_name}_heatmap_{args.max_tokens}"
+    plt.savefig(f"{output_stem}.png", dpi=300, bbox_inches='tight')
+    return output_stem
 
 def main(args):
     device = torch.device(args.device)
@@ -124,42 +168,8 @@ def main(args):
             result = {"Context Length": context_length, "Document Depth": round(depth*100, -1),"Score": accuracy * 100}
             all_accuries.append(result)
     df = pd.DataFrame(all_accuries)
-    cmap = LinearSegmentedColormap.from_list("custom_cmap", ["#F0496E", "#EBB839", "#0CD79F"])
-    
-    pivot_table = pd.pivot_table(df, values='Score', index=['Document Depth', 'Context Length'], aggfunc='mean').reset_index() # This will aggregate
-    pivot_table = pivot_table.pivot(index="Document Depth", columns="Context Length", values="Score")
-    # Create the heatmap with better aesthetics
-    plt.figure(figsize=(17.5, 8))  # Can adjust these dimensions as needed
-    ax = sns.heatmap(
-        pivot_table,
-        vmin=0,
-        vmax=100,
-        fmt="g",
-        cmap=cmap,
-        cbar_kws={'label': 'Score'},
-        linewidths=1.5,            # 设置线条宽度
-        linecolor='white'          # 设置线条颜色为白色
-    )
-
-    # Title
-    plt.title('Needle in a Haystack Evaluation', fontsize=24)
-
-    # More aesthetics
-    plt.xlabel('Context Length', fontsize=22)  # X-axis label with larger font
-    plt.ylabel('Answer Depth (%)', fontsize=22)  # Y-axis label with larger font
-    plt.xticks(rotation=45, fontsize=16)  # Rotate and enlarge x-axis labels
-    plt.yticks(rotation=0, fontsize=16)  # Enlarge y-axis labels
-    # 设置 colorbar 字体大小
-    cbar = ax.collections[0].colorbar
-    cbar.ax.tick_params(labelsize=16)  # 增大 colorbar 的刻度字体
-    cbar.set_label('Score', fontsize=22)  # 增大 colorbar 的标题字体
-    plt.tight_layout()  # Fits everything neatly into the figure area
-    # save
-    log_dir = Path(args.log_name)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    base_name = Path(args.base_model).stem
-    output_stem = log_dir / f"{base_name}_heatmap_{args.max_tokens}"
-    plt.savefig(f"{output_stem}.png", dpi=300, bbox_inches='tight')
+    # plot heatmap
+    output_stem = plot_heatmap(df, args)
     df.to_csv(f"{output_stem}.csv", index=False)
     
     
