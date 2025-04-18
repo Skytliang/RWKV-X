@@ -356,9 +356,10 @@ if ruler_tasks:
     )
     eval_results.update(results['results'])
 if longbench_tasks:
-    print(f'Running evaluation on LongBench tasks: {longbench_tasks}')
+    longbench_task_real_names = ['longbench_' + task for task in longbench_tasks]
+    print(f'Running evaluation on LongBench tasks: {longbench_task_real_names}')
     results = adapter.run_eval(
-        eval_tasks=longbench_tasks,
+        eval_tasks=longbench_task_real_names,
     )
 # convert results to a table
 import pandas as pd
