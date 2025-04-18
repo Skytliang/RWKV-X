@@ -410,7 +410,7 @@ class CausalSparseAttention(nn.Module):
             k = k.view(new_B, new_T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)        
             q = q.view(new_B, new_T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
             v = v.view(new_B, new_T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # here we use causal attention in chunk
             y = y.transpose(1, 2).contiguous().view(new_B, new_T, C) # re-assemble all head outputs side by side
             k = k.transpose(1, 2).contiguous().view(new_B, new_T, C)
             v = v.transpose(1, 2).contiguous().view(new_B, new_T, C)
