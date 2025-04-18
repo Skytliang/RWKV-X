@@ -39,7 +39,12 @@ torch.cuda.manual_seed_all(seed)
 np.random.seed(seed)
 random.seed(seed)
 
-RULER_TASK_GROUP = {'niah_single_1', 'niah_single_2', 'niah_single_3', 'niah_multikey_1'}
+ENGLISH_TASK_GROUP = ['lambada_openai', 'hellaswag', 'piqa', 'arc_easy', 'arc_challenge', 'winogrande', 'sciq', 'mmlu']
+MULTILINGUAL_TASK_GROUP = ['lambada_multilingual', 'xstorycloze', 'xwinograd', 'xcopa']
+RULER_TASK_GROUP = ['niah_single_1', 'niah_single_2', 'niah_single_3', 'niah_multikey_1']
+LONGBENCH_TASK_GROUP = ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", \
+            "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", \
+            "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
 TASK_TO_NUM_FEWSHOT = {
     'mmlu': 5,
 }    
@@ -55,6 +60,8 @@ def parse_config():
     group.add_argument('--moba_topk', type=int, default=3, help='topk for moba')
     # add a group for eval
     group = parser.add_argument_group('eval')
+    group.add_argument('--eval_tasks', type=str, nargs='+', default=[], help='tasks to evaluate')
+    group.add_argument('--task_group', type=str, default='disable', choices=['english', 'ruler', 'longbench', 'disable', 'multilingual'], help='task group to evaluate')
     group.add_argument('--max_seq_lengths', type=int, nargs='+', default=[1000, 2000, 4000, 8000], help='max sequence lengths for ruler')
 
     args = parser.parse_args()
@@ -69,21 +76,27 @@ print(f'Loading model - {MODEL_NAME}')
 torch.cuda.set_device(args.device)
 model = RWKV_X(model_path=args.model_path, strategy='cuda fp16')
 pipeline = PIPELINE(model)
+tokenizer = pipeline.tokenizer
+print(f"Model loaded on {args.device}")
 
 eval_tasks = []
-eval_tasks += ['lambada_openai']
-#eval_tasks += ['hellaswag','winogrande']
-#eval_tasks += ['lambada_openai','piqa','storycloze_2016','hellaswag','winogrande']
-#eval_tasks += ['arc_challenge','arc_easy','headqa_en', 'openbookqa','sciq']
-# copa bug: ConnectionError: Couldn't reach https://nlp.stanford.edu/data/coqa/coqa-train-v1.0.json (error 503), the server is down.
-# fix storycloze_2016 bug: open lm_eval/tasks/storycloze/storycloze_2016.yaml, change dataset_path to: MoE-UNC/story_cloze and change dataset_name to: default
-# fix headqa bug: open lm_eval/tasks/headqa/headqa_en.yaml, change dataset_path to: head_qa
-
-# multilingual
-#eval_tasks += ['lambada_multilingual', 'xstorycloze', 'xwinograd', 'xcopa']
-
-# mmlu
-#eval_tasks += ['mmlu']
+if args.task_group != 'disable':
+    if args.task_group == 'english':
+        eval_tasks += ENGLISH_TASK_GROUP
+    elif args.task_group == 'multilingual':
+        eval_tasks += MULTILINGUAL_TASK_GROUP
+    elif args.task_group == 'ruler':
+        eval_tasks += RULER_TASK_GROUP
+    elif args.task_group == 'longbench':
+        eval_tasks += LONGBENCH_TASK_GROUP
+    else:
+        raise ValueError(f"Unknown task group: {args.task_group}")
+else:
+    if args.eval_tasks:
+        eval_tasks += args.eval_tasks
+    else:
+        raise ValueError(f"Please specify tasks to evaluate with --eval_tasks or use --task_group")
+print(f"Evaluating on tasks: {eval_tasks}")
 
 # set num_fewshot
 num_fewshot = {task: TASK_TO_NUM_FEWSHOT.get(task, 0) for task in eval_tasks}
@@ -324,13 +337,14 @@ class EvalHarnessAdapter(HFLM):
         return results
 
 adapter = EvalHarnessAdapter()
-normal_tasks = [task for task in eval_tasks if task not in RULER_TASK_GROUP]
+english_tasks = [task for task in eval_tasks if task in ENGLISH_TASK_GROUP]
 ruler_tasks = [task for task in eval_tasks if task in RULER_TASK_GROUP]
+longbench_tasks = [task for task in eval_tasks if task in LONGBENCH_TASK_GROUP]
 eval_results = {}
-if normal_tasks:
-    print(f'Running evaluation on {normal_tasks} with {num_fewshot}-shot examples')
+if english_tasks:
+    print(f'Running evaluation on {english_tasks} with {num_fewshot}-shot examples')
     results = adapter.run_eval(
-        eval_tasks=normal_tasks,
+        eval_tasks=english_tasks,
         num_fewshot=num_fewshot,
     )
     eval_results.update(results['results'])
@@ -341,6 +355,11 @@ if ruler_tasks:
         max_seq_lengths=args.max_seq_lengths,
     )
     eval_results.update(results['results'])
+if longbench_tasks:
+    print(f'Running evaluation on LongBench tasks: {longbench_tasks}')
+    results = adapter.run_eval(
+        eval_tasks=longbench_tasks,
+    )
 # convert results to a table
 import pandas as pd
 df = pd.DataFrame(eval_results)
