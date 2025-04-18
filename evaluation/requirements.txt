@@ -5,3 +5,7 @@ wonderwords
 nltk
 ninja
 rwkv
+# for longbench
+jieba
+fuzzywuzzy
+rouge
