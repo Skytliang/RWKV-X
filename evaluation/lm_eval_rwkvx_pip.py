@@ -364,7 +364,7 @@ if longbench_tasks:
 # convert results to a table
 import pandas as pd
 df = pd.DataFrame(eval_results)
-task_str = '-'.join(eval_tasks)
+task_str = args.task_group if args.task_group != 'disable' else '-'.join(eval_tasks[:3])
 context_str = f"{args.max_seq_lengths[0]//1000}k-{args.max_seq_lengths[-1]//1000}k"
 model_stem = Path(MODEL_NAME).stem + f"_CS{args.moba_chunk_size}-TK{args.moba_topk}"
 metric_output_name = model_stem + "_" + task_str + "_" + context_str +".csv"
