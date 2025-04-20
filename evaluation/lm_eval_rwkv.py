@@ -8,6 +8,7 @@
 #
 import os, sys, types, json, math, time
 import argparse
+import random
 from tqdm import tqdm
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,16 +29,39 @@ from rwkv.utils import PIPELINE
 
 from lm_eval import tasks, evaluator, utils
 from lm_eval.models.huggingface import HFLM
+from lm_eval.api.task import ConfigurableTask
+from lm_eval.api.group import ConfigurableGroup
 
-RULER_TASK_SET = {'niah_single_1', 'niah_single_2', 'niah_single_3', 'niah_multikey_1'}
+seed = 22
+# set seed for everything
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
+np.random.seed(seed)
+random.seed(seed)
+
+ENGLISH_TASK_GROUP = ['lambada_openai', 'hellaswag', 'piqa', 'arc_easy', 'arc_challenge', 'winogrande', 'sciq', 'mmlu']
+MULTILINGUAL_TASK_GROUP = ['lambada_multilingual', 'xstorycloze', 'xwinograd', 'xcopa']
+RULER_TASK_GROUP = ['niah_single_1', 'niah_single_2', 'niah_single_3', 'niah_multikey_1']
+LONGBENCH_TASK_GROUP = ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", \
+            "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", \
+            "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
+TASK_TO_NUM_FEWSHOT = {
+    'mmlu': 5,
+}    
 ########################################################################################################
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
     parser.add_argument('model_path', type=str)
     parser.add_argument('--log_dir', type=str, default='logs/lm_eval/')
     parser.add_argument('--device', type=str, default='cuda:0')
+    # add a group for moba
+    group = parser.add_argument_group('moba')
+    group.add_argument('--moba_chunk_size', type=int, default=2048, help='chunk size for moba')
+    group.add_argument('--moba_topk', type=int, default=3, help='topk for moba')
     # add a group for eval
     group = parser.add_argument_group('eval')
+    group.add_argument('--eval_tasks', type=str, nargs='+', default=[], help='tasks to evaluate')
+    group.add_argument('--task_group', type=str, default='disable', choices=['english', 'ruler', 'longbench', 'disable', 'multilingual'], help='task group to evaluate')
     group.add_argument('--max_seq_lengths', type=int, nargs='+', default=[1000, 2000, 4000, 8000], help='max sequence lengths for ruler')
 
     args = parser.parse_args()
@@ -54,22 +78,26 @@ model = RWKV(model=MODEL_NAME, strategy='cuda fp16')
 pipeline = PIPELINE(model, "rwkv_vocab_v20230424")
 
 eval_tasks = []
-eval_tasks += ['niah_single_1']
-#eval_tasks += ['hellaswag','winogrande']
-#eval_tasks += ['lambada_openai','piqa','storycloze_2016','hellaswag','winogrande']
-#eval_tasks += ['arc_challenge','arc_easy','headqa_en', 'openbookqa','sciq']
-# copa bug: ConnectionError: Couldn't reach https://nlp.stanford.edu/data/coqa/coqa-train-v1.0.json (error 503), the server is down.
-# fix storycloze_2016 bug: open lm_eval/tasks/storycloze/storycloze_2016.yaml, change dataset_path to: MoE-UNC/story_cloze and change dataset_name to: default
-# fix headqa bug: open lm_eval/tasks/headqa/headqa_en.yaml, change dataset_path to: head_qa
-
-# multilingual
-#eval_tasks += ['lambada_multilingual', 'xstorycloze', 'xwinograd', 'xcopa']
-
-# mmlu
-#eval_tasks += ['mmlu']
+if args.task_group != 'disable':
+    if args.task_group == 'english':
+        eval_tasks += ENGLISH_TASK_GROUP
+    elif args.task_group == 'multilingual':
+        eval_tasks += MULTILINGUAL_TASK_GROUP
+    elif args.task_group == 'ruler':
+        eval_tasks += RULER_TASK_GROUP
+    elif args.task_group == 'longbench':
+        eval_tasks += LONGBENCH_TASK_GROUP
+    else:
+        raise ValueError(f"Unknown task group: {args.task_group}")
+else:
+    if args.eval_tasks:
+        eval_tasks += args.eval_tasks
+    else:
+        raise ValueError(f"Please specify tasks to evaluate with --eval_tasks or use --task_group")
+print(f"Evaluating on tasks: {eval_tasks}")
 
 # set num_fewshot
-num_fewshot = 0 # default, please change it by task
+num_fewshot = {task: TASK_TO_NUM_FEWSHOT.get(task, 0) for task in eval_tasks}
 
 
 RWKV_PAD = pipeline.tokenizer.encode('\n') # we will use '\n' as PAD
@@ -238,21 +266,40 @@ class EvalHarnessAdapter(HFLM):
         return reord.get_original(res)
 
     @torch.no_grad()
-    def run_eval(self, eval_tasks=None, num_fewshot=None, limit=None, bootstrap_iters=2):
+    def run_eval(self, eval_tasks=None, num_fewshot=None, limit=None, bootstrap_iters=0):
         ''' Run evaluation on the tasks, such as MMLU, HellaSwag, LAMBADA, etc.
         :param eval_tasks: list of task names to evaluate on
         :param num_fewshot: number of few-shot examples to evaluate on
+        :param bootstrap_iters: Set to 0 for skipping all stderr calculations
         '''
-        task_dict = tasks.get_task_dict(eval_tasks)
+        def recursive_set_config(obj, key, value):
+            if isinstance(obj, ConfigurableTask):
+                obj.set_config(key=key, value=value)
+            elif isinstance(obj, dict):
+                for k, v in obj.items():
+                    recursive_set_config(v, key, value)
+
         if num_fewshot is None:
-            num_fewshot = {task: 0 for task in task_dict}
+            num_fewshot = {}
+
+        task_dict = tasks.get_task_dict(eval_tasks)
         for task_name in task_dict:
             task_obj = task_dict[task_name]
+            if isinstance(task_name, str):
+                task_fewshot = num_fewshot.get(task_name, 0)
+            if isinstance(task_name, ConfigurableGroup):
+                group_or_task_name = task_name.group_name
+                task_fewshot = num_fewshot.get(group_or_task_name, 0)
             if isinstance(task_obj, tuple):
                 _, task_obj = task_obj
                 if task_obj is None:
                     continue
-            task_obj.set_config(key="num_fewshot", value=num_fewshot)
+            if isinstance(task_obj, ConfigurableTask):
+                task_obj.set_config(key="num_fewshot", value=task_fewshot)
+                print(f"Task {task_name} is a ConfigurableTask, set num_fewshot to {task_fewshot}")
+            if isinstance(task_obj, dict):
+                print(f"Task {task_name} is a dict, recursing set it to {task_fewshot}")
+                recursive_set_config(task_obj, "num_fewshot", task_fewshot)
         
         results = evaluator.evaluate(
                 lm=self,
@@ -263,13 +310,14 @@ class EvalHarnessAdapter(HFLM):
         return results
 
     @torch.no_grad()
-    def run_ruler(self, eval_tasks, max_seq_lengths):
+    def run_ruler(self, eval_tasks, max_seq_lengths, bootstrap_iters=0):
         ''' Run evaluation on the given tasks.
         :param eval_tasks: list of task names to evaluate on
         :param num_fewshot: number of few-shot examples to evaluate on
+        :param bootstrap_iters: Set to 0 for skipping all stderr calculations
         '''
         ruler_metadata = {
-            'tokenizer': TokenizerWrapper(pipeline.tokenizer), 
+            'tokenizer': TokenizerWrapper(tokenizer), 
             "max_seq_lengths": max_seq_lengths
             }
         task_manager = tasks.TaskManager(metadata=ruler_metadata)
@@ -282,19 +330,20 @@ class EvalHarnessAdapter(HFLM):
         results = evaluator.evaluate(
                 lm=self,
                 task_dict=task_dict,
+                bootstrap_iters=bootstrap_iters,
             )
         return results
 
 adapter = EvalHarnessAdapter()
-normal_tasks = [task for task in eval_tasks if task not in RULER_TASK_SET]
-ruler_tasks = [task for task in eval_tasks if task in RULER_TASK_SET]
+english_tasks = [task for task in eval_tasks if task in ENGLISH_TASK_GROUP]
+ruler_tasks = [task for task in eval_tasks if task in RULER_TASK_GROUP]
+longbench_tasks = [task for task in eval_tasks if task in LONGBENCH_TASK_GROUP]
 eval_results = {}
-if normal_tasks:
-    print(f'Running evaluation on {normal_tasks} with {num_fewshot}-shot examples')
+if english_tasks:
+    print(f'Running evaluation on {english_tasks} with {num_fewshot}-shot examples')
     results = adapter.run_eval(
-        eval_tasks=normal_tasks,
+        eval_tasks=english_tasks,
         num_fewshot=num_fewshot,
-        bootstrap_iters=100,
     )
     eval_results.update(results['results'])
 if ruler_tasks:
@@ -304,12 +353,24 @@ if ruler_tasks:
         max_seq_lengths=args.max_seq_lengths,
     )
     eval_results.update(results['results'])
+if longbench_tasks:
+    longbench_task_real_names = ['longbench_' + task for task in longbench_tasks]
+    print(f'Running evaluation on LongBench tasks: {longbench_task_real_names}')
+    results = adapter.run_eval(
+        eval_tasks=longbench_task_real_names,
+    )
+    eval_results.update(results['results'])
 # convert results to a table
 import pandas as pd
 df = pd.DataFrame(eval_results)
-task_str = '-'.join(eval_tasks)
+task_str = args.task_group if args.task_group != 'disable' else '-'.join(eval_tasks[:3])
 context_str = f"{args.max_seq_lengths[0]//1000}k-{args.max_seq_lengths[-1]//1000}k"
-model_stem = Path(MODEL_NAME).stem
+model_stem = Path(MODEL_NAME).stem + f"_CS{args.moba_chunk_size}-TK{args.moba_topk}"
 metric_output_name = model_stem + "_" + task_str + "_" + context_str +".csv"
 metric_output_path = OUTPUT_DIR / metric_output_name
 df.to_csv(metric_output_path)
+print(f"Evaluation results saved to {metric_output_path}")
+# pretty print the results
+print("Evaluation results:")
+import pprint
+pprint.pprint(eval_results)

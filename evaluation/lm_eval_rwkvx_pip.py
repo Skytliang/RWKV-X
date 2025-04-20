@@ -361,6 +361,7 @@ if longbench_tasks:
     results = adapter.run_eval(
         eval_tasks=longbench_task_real_names,
     )
+    eval_results.update(results['results'])
 # convert results to a table
 import pandas as pd
 df = pd.DataFrame(eval_results)
