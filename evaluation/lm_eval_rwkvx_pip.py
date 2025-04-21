@@ -41,7 +41,7 @@ random.seed(seed)
 
 ENGLISH_TASK_GROUP = ['lambada_openai', 'hellaswag', 'piqa', 'arc_easy', 'arc_challenge', 'winogrande', 'sciq', 'mmlu']
 MULTILINGUAL_TASK_GROUP = ['lambada_multilingual', 'xstorycloze', 'xwinograd', 'xcopa']
-RULER_TASK_GROUP = ['niah_single_1', 'niah_single_2', 'niah_single_3', 'niah_multikey_1']
+RULER_TASK_GROUP = ['niah_single_1', 'niah_single_2', 'niah_single_3']
 LONGBENCH_TASK_GROUP = ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", \
             "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", \
             "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
