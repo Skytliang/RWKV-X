@@ -113,17 +113,17 @@ def plot_heatmap(df, args):
     xticks = ax.get_xticks()
     xtick_labels = pivot_table.columns.tolist()
     xtick_labels_formatted = [f"{int(x)//1000}K" for x in xtick_labels]
-    ax.set_xticklabels(xtick_labels_formatted, fontsize=20)
+    ax.set_xticklabels(xtick_labels_formatted, fontsize=24)
 
     # More aesthetics
-    plt.xlabel('Context Length', fontsize=26)  # X-axis label with larger font
-    plt.ylabel('Answer Depth (%)', fontsize=26)  # Y-axis label with larger font
+    plt.xlabel('Context Length', fontsize=30)  # X-axis label with larger font
+    plt.ylabel('Answer Depth (%)', fontsize=30)  # Y-axis label with larger font
     #plt.xticks(rotation=45, fontsize=16)  # Rotate and enlarge x-axis labels
-    plt.yticks(rotation=0, fontsize=20)  # Enlarge y-axis labels
+    plt.yticks(rotation=0, fontsize=24)  # Enlarge y-axis labels
     # 设置 colorbar 字体大小
     cbar = ax.collections[0].colorbar
-    cbar.ax.tick_params(labelsize=20)  # 增大 colorbar 的刻度字体
-    cbar.set_label('Score', fontsize=26)  # 增大 colorbar 的标题字体
+    cbar.ax.tick_params(labelsize=24)  # 增大 colorbar 的刻度字体
+    cbar.set_label('Score', fontsize=30)  # 增大 colorbar 的标题字体
     plt.tight_layout()  # Fits everything neatly into the figure area
     # save
     log_dir = Path(args.log_name)
