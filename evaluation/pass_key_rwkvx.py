@@ -88,7 +88,7 @@ def passkey_retrieval_test(model, tokenizer, device, n_garbage_prefix, n_garbage
     return is_correct, len_token
 
 
-def plot_heatmap(df, args):
+def plot_heatmap(df, args, fontsize=30):
     cmap = LinearSegmentedColormap.from_list("custom_cmap", ["#F0496E", "#EBB839", "#0CD79F"])
     
     pivot_table = pd.pivot_table(df, values='Score', index=['Document Depth', 'Context Length'], aggfunc='mean').reset_index() # This will aggregate
@@ -113,17 +113,17 @@ def plot_heatmap(df, args):
     xticks = ax.get_xticks()
     xtick_labels = pivot_table.columns.tolist()
     xtick_labels_formatted = [f"{int(x)//1000}K" for x in xtick_labels]
-    ax.set_xticklabels(xtick_labels_formatted, fontsize=24)
+    ax.set_xticklabels(xtick_labels_formatted, fontsize=fontsize)  # Set x-axis labels with larger font
 
     # More aesthetics
-    plt.xlabel('Context Length', fontsize=30)  # X-axis label with larger font
-    plt.ylabel('Answer Depth (%)', fontsize=30)  # Y-axis label with larger font
+    plt.xlabel('Context Length', fontsize=fontsize+6)  # X-axis label with larger font
+    plt.ylabel('Answer Depth (%)', fontsize=fontsize+6)  # Y-axis label with larger font
     #plt.xticks(rotation=45, fontsize=16)  # Rotate and enlarge x-axis labels
-    plt.yticks(rotation=0, fontsize=24)  # Enlarge y-axis labels
+    plt.yticks(rotation=0, fontsize=fontsize)  # Enlarge y-axis labels
     # 设置 colorbar 字体大小
     cbar = ax.collections[0].colorbar
-    cbar.ax.tick_params(labelsize=24)  # 增大 colorbar 的刻度字体
-    cbar.set_label('Score', fontsize=30)  # 增大 colorbar 的标题字体
+    cbar.ax.tick_params(labelsize=fontsize+6)  # 增大 colorbar 的刻度字体
+    cbar.set_label('Score', fontsize=fontsize+6)  # 增大 colorbar 的标题字体
     plt.tight_layout()  # Fits everything neatly into the figure area
     # save
     log_dir = Path(args.log_name)
