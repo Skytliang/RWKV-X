@@ -76,6 +76,7 @@ print(f'Loading model - {MODEL_NAME}')
 torch.cuda.set_device(args.device)
 model = RWKV(model=MODEL_NAME, strategy='cuda fp16')
 pipeline = PIPELINE(model, "rwkv_vocab_v20230424")
+tokenizer = pipeline.tokenizer
 
 eval_tasks = []
 if args.task_group != 'disable':
