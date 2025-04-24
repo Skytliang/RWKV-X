@@ -65,15 +65,13 @@ for ctx_len in args.max_seq_lengths:
         out, state = model.forward([i], state)
     end_time = time.time()
     latency = (end_time - start_time) / 10
-    print(f"ctx_len: {ctx_len}, latency: {latency * 1000:.2f} ms")
-
     # measure gpu memory usage
     mem_alloc = torch.cuda.memory_allocated(args.device) / 1024 ** 3 # in GiB
-    print(f"ctx_len: {ctx_len}, memory: {mem_alloc:.2f} GiB")
+    print(f"ctx_len: {ctx_len}, latency: {latency * 1000:.2f} ms, memory: {mem_alloc:.2f} GiB")
     torch.cuda.reset_peak_memory_stats(args.device)
     torch.cuda.empty_cache()
     records.append(dict(ctx_len=ctx_len, latency=latency, memory=mem_alloc))
 # first column is ctx_len, second column is latency, third column is memory
 df = pd.DataFrame(records)
-df.to_csv(OUTPUT_DIR / Path(args.model_path).stem() + '_decoding.csv', index=False)
-print(f"Decoding latency and memory usage saved to {OUTPUT_DIR / Path(args.model_path).stem() + '_decoding.csv'}")
+df.to_csv(OUTPUT_DIR / Path(args.model_path).stem + '_decoding.csv', index=False)
+print(f"Decoding latency and memory usage saved to {OUTPUT_DIR / Path(args.model_path).stem + '_decoding.csv'}")
