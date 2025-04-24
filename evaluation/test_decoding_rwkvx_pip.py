@@ -71,7 +71,7 @@ for ctx_len in args.max_seq_lengths:
     print(f"ctx_len: {ctx_len}, latency: {latency * 1000:.2f} ms, memory: {mem_alloc:.2f} GiB")
     torch.cuda.reset_peak_memory_stats(args.device)
     torch.cuda.empty_cache()
-    records.append(dict(ctx_len=ctx_len, latency=latency, memory=mem_alloc))
+    records.append(dict(ctx_len=ctx_len, latency=latency*1000, memory=round(mem_alloc, 2)))
 # first column is ctx_len, second column is latency, third column is memory
 df = pd.DataFrame(records)
 output_name = f"{MODEL_STEM}_decoding.csv"
