@@ -4,6 +4,7 @@
 
 from dataclasses import dataclass
 import os, types
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -311,6 +312,8 @@ class CausalSparseAttention(nn.Module):
         self.moba_chunk_size = config.moba_chunk_size
         self.moba_topk = config.moba_topk
         self.window_size = config.moba_chunk_size * config.moba_topk
+        # kv cache management
+        self.max_kv_cache_size = config.max_kv_cache_size
 
     def forward_one(self, x, k_cache, v_cache):
         ''' used for decode, only one token at a time
@@ -365,6 +368,13 @@ class CausalSparseAttention(nn.Module):
             y = F.scaled_dot_product_attention(q, k_comb, v_comb)
             y = y.transpose(1, 2).contiguous().view(C) # (1, 1, C) -> (C)
             y = self.output(y)
+            # simple kv cache management by dropping the chunk with lowest score
+            if CT > self.max_kv_cache_size:
+                keep_chunk_indices = torch.topk(chunk_score, num_chunks - 1, dim=-1).indices.squeeze() # (num_chunks - 1)
+                keep_k = k_chunk[:, keep_chunk_indices].view(1, -1, C) # (1, (num_chunks-1) * moba_chunk_size, C)
+                keep_v = v_chunk[:, keep_chunk_indices].view(1, -1, C) # (1, (num_chunks-1) * moba_chunk_size, C)
+                k_cache = torch.cat((keep_k, k_reminder), dim=1) # (1, (num_chunks-1) * moba_chunk_size + reminder, C)
+                v_cache = torch.cat((keep_v, v_reminder), dim=1) # (1, (num_chunks-1) * moba_chunk_size + reminder, C)
             # update k, v cache
             k_cache = torch.cat((k_cache, k), dim=1)
             v_cache = torch.cat((v_cache, v), dim=1)
@@ -495,6 +505,7 @@ class RWKV_X_Config:
     moba_chunk_size: int = 2048
     moba_topk: int = 3
     head_size: int = 64
+    max_kv_cache_size: int = 12288
 
 class RWKV_X(nn.Module):
     def __init__(self, model_path, strategy):
