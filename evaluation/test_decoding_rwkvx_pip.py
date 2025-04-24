@@ -47,6 +47,7 @@ def parse_config():
 
 args = parse_config()
 MODEL_NAME = args.model_path
+MODEL_STEM = Path(MODEL_NAME).stem
 OUTPUT_DIR = Path(args.log_dir)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -73,5 +74,6 @@ for ctx_len in args.max_seq_lengths:
     records.append(dict(ctx_len=ctx_len, latency=latency, memory=mem_alloc))
 # first column is ctx_len, second column is latency, third column is memory
 df = pd.DataFrame(records)
-df.to_csv(OUTPUT_DIR / Path(args.model_path).stem + '_decoding.csv', index=False)
-print(f"Decoding latency and memory usage saved to {OUTPUT_DIR / Path(args.model_path).stem + '_decoding.csv'}")
+output_name = f"{MODEL_STEM}_decoding.csv"
+df.to_csv(OUTPUT_DIR / output_name, index=False)
+print(f"Decoding latency and memory usage saved to {OUTPUT_DIR / output_name}")
