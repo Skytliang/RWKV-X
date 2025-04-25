@@ -326,6 +326,10 @@ class CausalSparseAttention(nn.Module):
         B, QT, C = q.size()
         KT, VT = k.size(1), v.size(1)
         assert KT == VT, "key and value must have the same length"
+        # check if the cache size is larger than the minimum size
+        if self.min_kv_cache_size >= KT:
+            return k, v
+        # split k, v into past and current
         past_KT = KT - self.kv_cache_window_size
         k_past, k_cur = k[:, :past_KT, :], k[:, past_KT: :]
         v_past, v_cur = v[:, :past_KT, :], v[:, past_KT:, :]
@@ -338,16 +342,17 @@ class CausalSparseAttention(nn.Module):
         attn_weights = F.softmax(attn_weights, dim=-1) # (B, NH, QT, past_KT)
         vote = attn_weights.sum(dim=-2) # (B, NH, past_KT) Sum the weight along the query dimension
         assert self.min_kv_cache_size - self.kv_cache_window_size > 0
-        indices = vote.topk(self.min_kv_cache_size - self.kv_cache_window_size, dim=-1).indices
+        keep_KT = min(self.min_kv_cache_size - self.kv_cache_window_size, past_KT)
+        indices = vote.topk(keep_KT, dim=-1).indices
         # Expand the indices to match the head dimension for gathering
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, HS)
         k_past_compress = torch.gather(k_past, 2, indices)
         v_past_compress = torch.gather(v_past, 2, indices)
         # Reshape back to (B, KT, C)
-        k_past_compress = k_past_compress.transpose(1, 2).contiguous().view(B, -1, C) # (B, min_kv_cache_size-win_size, C)
-        v_past_compress = v_past_compress.transpose(1, 2).contiguous().view(B, -1, C) # (B, min_kv_cache_size-win_size, C)
+        k_past_compress = k_past_compress.transpose(1, 2).contiguous().view(B, -1, C) # (B, keep_KT, C)
+        v_past_compress = v_past_compress.transpose(1, 2).contiguous().view(B, -1, C) # (B, keep_KT, C)
         # 
-        k_cache = torch.cat([k_past_compress, k_cur], dim=1) # (B, min_kv_cache_size, C)
+        k_cache = torch.cat([k_past_compress, k_cur], dim=1) # (B, keep_KT, C)
         v_cache = torch.cat([v_past_compress, v_cur], dim=1)
         return k_cache, v_cache
 
