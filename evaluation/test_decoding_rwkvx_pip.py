@@ -116,6 +116,6 @@ combined_df = prefill_df.merge(decoding_df, on="ctx_len", suffixes=("_prefill", 
 
 # 保存合并后的结果
 attn_mode = 'sparse_attention' if args.attn_mode == 'sparse' else 'full_attention'
-kv_cache_mode = 'without_kv_cache_management' if args.max_kv_cache_size == 0 else f'with_max_kv_cache_{args.max_kv_cache_size}'
+kv_cache_mode = 'without_kv_cache_management' if args.max_kv_cache_size == 0 else f'with_min_kv_cache_{args.min_kv_cache_size}'
 combined_output = f"{MODEL_STEM}_{attn_mode}_{kv_cache_mode}.csv"
 combined_df.to_csv(OUTPUT_DIR / combined_output, index=False)
