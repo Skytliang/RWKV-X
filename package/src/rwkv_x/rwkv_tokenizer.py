@@ -1,5 +1,5 @@
 ########################################################################################################
-# The RWKV Language Model - https://github.com/BlinkDL/RWKV-LM
+# The RWKV-X Language Model - https://github.com/howard-hou/RWKV-X
 ########################################################################################################
 
 class TRIE:

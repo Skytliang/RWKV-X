@@ -1,5 +1,5 @@
 ########################################################################################################
-# The RWKV Language Model - https://github.com/BlinkDL/RWKV-LM
+# The RWKV-X Language Model - https://github.com/howard-hou/RWKV-X
 ########################################################################################################
 #
 # pip install rwkv lm_eval --upgrade
@@ -55,25 +55,52 @@ print(f'Loading model - {MODEL_NAME}')
 torch.cuda.set_device(args.device)
 model = RWKV_X(model_path=args.model_path, strategy='cuda fp16')
 print(f"Model loaded on {args.device}")
+print(f"Context length Test: {args.max_seq_lengths}")
 
-# measure decoding latency
-records = []
+# measure prefill and decoding latency & memory
+prefill_records = []
+decoding_records = []
+chunk_len = 4000
+
 for ctx_len in args.max_seq_lengths:
-    ctx = [0] * ctx_len
-    out, state = model.forward(ctx, None)
-    start_time = time.time()
-    for i in range(10):
-        out, state = model.forward([i], state)
-    end_time = time.time()
-    latency = (end_time - start_time) / 10
-    # measure gpu memory usage
-    mem_alloc = torch.cuda.memory_allocated(args.device) / 1024 ** 3 # in GiB
-    print(f"ctx_len: {ctx_len}, latency: {latency * 1000:.2f} ms, memory: {mem_alloc:.2f} GiB")
+    tokens = [0] * ctx_len
+
+    # Measure prefill
     torch.cuda.reset_peak_memory_stats(args.device)
     torch.cuda.empty_cache()
-    records.append(dict(ctx_len=ctx_len, latency=latency*1000, memory=round(mem_alloc, 2)))
-# first column is ctx_len, second column is latency, third column is memory
-df = pd.DataFrame(records)
-output_name = f"{MODEL_STEM}_decoding.csv"
-df.to_csv(OUTPUT_DIR / output_name, index=False)
-print(f"Decoding latency and memory usage saved to {OUTPUT_DIR / output_name}")
+    state = None
+    start_prefill = time.time()
+    while len(tokens) > 0:
+        out, state = model.forward(tokens[:chunk_len], state)
+        tokens = tokens[chunk_len:]
+    end_prefill = time.time()
+    prefill_latency = (end_prefill - start_prefill) * 1000  # in ms
+    prefill_mem = torch.cuda.max_memory_allocated(args.device) / 1024 ** 3  # in GiB
+    print(f"[PREFILL] ctx_len: {ctx_len}, latency: {prefill_latency:.2f} ms, memory: {prefill_mem:.2f} GiB")
+
+    prefill_records.append(dict(ctx_len=ctx_len, latency=prefill_latency, memory=round(prefill_mem, 2)))
+
+    # Measure decoding
+    torch.cuda.reset_peak_memory_stats(args.device)
+    torch.cuda.empty_cache()
+    start_decode = time.time()
+    for i in range(10):
+        out, state = model.forward([i], state)
+    end_decode = time.time()
+    decoding_latency = (end_decode - start_decode) / 10 * 1000  # average per token, in ms
+    decoding_mem = torch.cuda.max_memory_allocated(args.device) / 1024 ** 3  # in GiB
+    print(f"[DECODING] ctx_len: {ctx_len}, latency: {decoding_latency:.2f} ms, memory: {decoding_mem:.2f} GiB")
+
+    decoding_records.append(dict(ctx_len=ctx_len, latency=decoding_latency, memory=round(decoding_mem, 2)))
+
+# Save results
+prefill_df = pd.DataFrame(prefill_records)
+decoding_df = pd.DataFrame(decoding_records)
+# 合并 prefill 和 decoding 的结果
+combined_df = prefill_df.merge(decoding_df, on="ctx_len", suffixes=("_prefill", "_decoding"))
+
+# 保存合并后的结果
+attn_mode = 'sparse_attention'
+kv_cache_mode = 'without_kv_cache_management'
+combined_output = f"{MODEL_STEM}_{attn_mode}_{kv_cache_mode}.csv"
+combined_df.to_csv(OUTPUT_DIR / combined_output, index=False)
