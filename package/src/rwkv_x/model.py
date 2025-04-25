@@ -366,7 +366,7 @@ class CausalSparseAttention(nn.Module):
         if self.max_kv_cache_size > 0 and k_cache.size(1) > self.max_kv_cache_size:
             k_cache, v_cache = self.update_kv_cache(q, k_cache, v_cache)
         CT = k_cache.size(1)
-        # apply the attention
+        # apply the attention, only decoding consider the full attention mode
         if CT <= self.window_size or self.attn_mode == 'full': # for short sequence, use full attention
             k_cache = torch.cat((k_cache, k), dim=1) # update k cache
             v_cache = torch.cat((v_cache, v), dim=1) # update v cache
@@ -424,7 +424,7 @@ class CausalSparseAttention(nn.Module):
             k_cache, v_cache = self.update_kv_cache(x, k_cache, v_cache)
         CT = k_cache.size(1) # cache seq length
         # apply the attention
-        if (T+CT) <= self.window_size or self.attn_mode == 'full': # for short sequence, use full attention
+        if (T+CT) <= self.window_size: # for short sequence, use full attention
             q, k, v = self.receptance(x), self.key(x), self.value(x)
             # prefix mask
             causal_mask = torch.ones((T, T), dtype=torch.bool, device=x.device).tril(diagonal=0)
