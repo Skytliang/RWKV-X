@@ -38,7 +38,7 @@ def parse_config():
     group = parser.add_argument_group('moba')
     group.add_argument('--moba_chunk_size', type=int, default=2048, help='chunk size for moba')
     group.add_argument('--moba_topk', type=int, default=3, help='topk for moba')
-    group.add_argument('--max_kv_cache_size', type=int, default=16000, help='0 means no kv cache management')
+    group.add_argument('--max_kv_cache_size', type=int, default=0, help='0 means no kv cache management')
     group.add_argument('--attn_mode', type=str, default='sparse', choices=['full', 'sparse'], help='attention mode')
     # add a group for eval
     group = parser.add_argument_group('eval')
