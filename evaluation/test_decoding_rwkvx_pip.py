@@ -38,8 +38,12 @@ def parse_config():
     group = parser.add_argument_group('moba')
     group.add_argument('--moba_chunk_size', type=int, default=2048, help='chunk size for moba')
     group.add_argument('--moba_topk', type=int, default=3, help='topk for moba')
-    group.add_argument('--max_kv_cache_size', type=int, default=0, help='0 means no kv cache management')
     group.add_argument('--attn_mode', type=str, default='sparse', choices=['full', 'sparse'], help='attention mode')
+    # add a group for kv cache
+    group = parser.add_argument_group('kv_cache')
+    group.add_argument('--max_kv_cache_size', type=int, default=0, help='0 means no kv cache management')
+    group.add_argument('--kv_cache_window_size', type=int, default=2000, help='0 means no kv cache management')
+    group.add_argument('--min_kv_cache_size', type=int, default=16000, help='kv cache size keep after management')
     # add a group for eval
     group = parser.add_argument_group('eval')
     group.add_argument('--max_seq_lengths', type=int, nargs='+', default=[1000, 2000, 4000, 8000], help='max sequence lengths for ruler')
@@ -58,8 +62,10 @@ torch.cuda.set_device(args.device)
 config = RWKV_X_Config(
         moba_chunk_size=args.moba_chunk_size,
         moba_topk=args.moba_topk,
+        attn_mode=args.attn_mode,
         max_kv_cache_size=args.max_kv_cache_size,
-        attn_mode=args.attn_mode
+        kv_cache_window_size=args.kv_cache_window_size,
+        min_kv_cache_size=args.min_kv_cache_size,
     )
 print('Model Config:', config)
 model = RWKV_X(model_path=args.model_path, strategy='cuda fp16', config=config)

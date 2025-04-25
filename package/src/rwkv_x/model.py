@@ -313,8 +313,43 @@ class CausalSparseAttention(nn.Module):
         self.moba_topk = config.moba_topk
         self.window_size = config.moba_chunk_size * config.moba_topk
         # kv cache management
-        self.max_kv_cache_size = config.max_kv_cache_size
+        self.max_kv_cache_size = config.max_kv_cache_size # condition that trigger the cache management
+        self.kv_cache_window_size = config.kv_cache_window_size # observation window size
+        self.min_kv_cache_size = config.min_kv_cache_size # minimum kv cache size
         self.attn_mode = config.attn_mode
+
+    def update_kv_cache(self, q, k, v):
+        '''
+        input: q, k, v: (B, QT, C), (B, KT, C)
+        output: k_past_compress, v_past_compress: (B, min_kv_cache_size, C)
+        '''
+        B, QT, C = q.size()
+        KT, VT = k.size(1), v.size(1)
+        assert KT == VT, "key and value must have the same length"
+        past_KT = KT - self.kv_cache_window_size
+        k_past, k_cur = k[:, :past_KT, :], k[:, past_KT: :]
+        v_past, v_cur = v[:, :past_KT, :], v[:, past_KT:, :]
+        q = q.view(B, QT, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, QT, hs)
+        k_past = k.view(B, past_KT, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, new_KT, hs)
+        v_past = v.view(B, past_KT, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, new_KT, hs)
+        # calculate attention weights
+        B, NH, QT, HS = q.size()
+        attn_weights = torch.matmul(q, k_past.transpose(2, 3)) / math.sqrt(HS) # (B, NH, QT, KT)
+        attn_weights = F.softmax(attn_weights, dim=-1) # (B, NH, QT, KT)
+        vote = attn_weights.sum(dim=-2) # (B, NH, KT) Sum the weight along the query dimension
+        assert self.min_kv_cache_size - self.kv_cache_window_size > 0
+        indices = vote.topk(self.min_kv_cache_size - self.kv_cache_window_size, dim=-1).indices
+        # Expand the indices to match the head dimension for gathering
+        indices = indices.unsqueeze(-1).expand(-1, -1, -1, HS)
+        k_past_compress = torch.gather(k_past, 2, indices)
+        v_past_compress = torch.gather(v_past, 2, indices)
+        # Reshape back to (B, KT, C)
+        k_past_compress = k_past_compress.transpose(1, 2).contiguous().view(B, -1, C) # (B, KT, C)
+        v_past_compress = v_past_compress.transpose(1, 2).contiguous().view(B, -1, C) # (B, KT, C)
+        # 
+        k_cache = torch.cat([k_past_compress, k_cur], dim=1) # (B, min_kv_cache_size, C)
+        v_cache = torch.cat([v_past_compress, v_cur], dim=1)
+        return k_cache, v_cache
 
     def forward_one(self, x, k_cache, v_cache):
         ''' used for decode, only one token at a time
@@ -327,8 +362,11 @@ class CausalSparseAttention(nn.Module):
         assert x.size(1) == 1, "sequence length must be 1"
         C = x.size(-1)
         q, k, v = self.receptance(x), self.key(x), self.value(x)
-        # split kv cache into two parts
+        # manage k, v cache
         CT = k_cache.size(1)
+        if self.max_kv_cache_size > 0 and CT > self.max_kv_cache_size:
+            k_cache, v_cache = self.update_kv_cache(q, k_cache, v_cache)
+        # apply the attention
         if CT <= self.window_size or self.attn_mode == 'full': # for short sequence, use full attention
             k_cache = torch.cat((k_cache, k), dim=1) # update k cache
             v_cache = torch.cat((v_cache, v), dim=1) # update v cache
@@ -369,14 +407,6 @@ class CausalSparseAttention(nn.Module):
             y = F.scaled_dot_product_attention(q, k_comb, v_comb)
             y = y.transpose(1, 2).contiguous().view(C) # (1, 1, C) -> (C)
             y = self.output(y)
-            # simple kv cache management by dropping the chunk with lowest score
-            # if CT > self.max_kv_cache_size:
-            #     keep_chunk_indices = torch.topk(chunk_score, num_chunks - 1, dim=-1).indices.squeeze() # (num_chunks - 1)
-            #     keep_k = k_chunk[:, keep_chunk_indices].view(1, -1, C) # (1, (num_chunks-1) * moba_chunk_size, C)
-            #     keep_v = v_chunk[:, keep_chunk_indices].view(1, -1, C) # (1, (num_chunks-1) * moba_chunk_size, C)
-            #     k_cache = torch.cat((keep_k, k_reminder), dim=1) # (1, (num_chunks-1) * moba_chunk_size + reminder, C)
-            #     v_cache = torch.cat((keep_v, v_reminder), dim=1) # (1, (num_chunks-1) * moba_chunk_size + reminder, C)
-            # update k, v cache
             k_cache = torch.cat((k_cache, k), dim=1)
             v_cache = torch.cat((v_cache, v), dim=1)
             return y, k_cache, v_cache
@@ -390,6 +420,10 @@ class CausalSparseAttention(nn.Module):
             x = x.unsqueeze(0) # (T, C) -> (1, T, C)
         B, T, C = x.size()
         CT = k_cache.size(1) # cache seq length
+        # manage k, v cache
+        if self.max_kv_cache_size > 0 and CT > self.max_kv_cache_size:
+            k_cache, v_cache = self.update_kv_cache(x, k_cache, v_cache)
+        # apply the attention
         if (T+CT) <= self.window_size or self.attn_mode == 'full': # for short sequence, use full attention
             q, k, v = self.receptance(x), self.key(x), self.value(x)
             # prefix mask
@@ -506,7 +540,9 @@ class RWKV_X_Config:
     moba_chunk_size: int = 2048
     moba_topk: int = 3
     head_size: int = 64
-    max_kv_cache_size: int = 16000
+    max_kv_cache_size: int = 20000
+    kv_cache_window_size: int = 2000
+    min_kv_cache_size: int = 16000
     attn_mode: str = 'sparse' # 'sparse' or 'full'
 
 class RWKV_X(nn.Module):
