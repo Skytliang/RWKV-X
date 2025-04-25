@@ -370,12 +370,12 @@ class CausalSparseAttention(nn.Module):
             y = y.transpose(1, 2).contiguous().view(C) # (1, 1, C) -> (C)
             y = self.output(y)
             # simple kv cache management by dropping the chunk with lowest score
-            if CT > self.max_kv_cache_size:
-                keep_chunk_indices = torch.topk(chunk_score, num_chunks - 1, dim=-1).indices.squeeze() # (num_chunks - 1)
-                keep_k = k_chunk[:, keep_chunk_indices].view(1, -1, C) # (1, (num_chunks-1) * moba_chunk_size, C)
-                keep_v = v_chunk[:, keep_chunk_indices].view(1, -1, C) # (1, (num_chunks-1) * moba_chunk_size, C)
-                k_cache = torch.cat((keep_k, k_reminder), dim=1) # (1, (num_chunks-1) * moba_chunk_size + reminder, C)
-                v_cache = torch.cat((keep_v, v_reminder), dim=1) # (1, (num_chunks-1) * moba_chunk_size + reminder, C)
+            # if CT > self.max_kv_cache_size:
+            #     keep_chunk_indices = torch.topk(chunk_score, num_chunks - 1, dim=-1).indices.squeeze() # (num_chunks - 1)
+            #     keep_k = k_chunk[:, keep_chunk_indices].view(1, -1, C) # (1, (num_chunks-1) * moba_chunk_size, C)
+            #     keep_v = v_chunk[:, keep_chunk_indices].view(1, -1, C) # (1, (num_chunks-1) * moba_chunk_size, C)
+            #     k_cache = torch.cat((keep_k, k_reminder), dim=1) # (1, (num_chunks-1) * moba_chunk_size + reminder, C)
+            #     v_cache = torch.cat((keep_v, v_reminder), dim=1) # (1, (num_chunks-1) * moba_chunk_size + reminder, C)
             # update k, v cache
             k_cache = torch.cat((k_cache, k), dim=1)
             v_cache = torch.cat((v_cache, v), dim=1)
