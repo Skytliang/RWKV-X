@@ -25,7 +25,7 @@ from torch.nn import functional as F
 os.environ["RWKV_JIT_ON"] = '0'
 os.environ["RWKV_CUDA_ON"] = '1'
 os.environ["RWKV_V7_ON"] = "1"
-from rwkv_x.model import RWKV_X
+from rwkv_x.model import RWKV_X, RWKV_X_Config
 
  
 ########################################################################################################
@@ -38,6 +38,8 @@ def parse_config():
     group = parser.add_argument_group('moba')
     group.add_argument('--moba_chunk_size', type=int, default=2048, help='chunk size for moba')
     group.add_argument('--moba_topk', type=int, default=3, help='topk for moba')
+    group.add_argument('--max_kv_cache_size', type=int, default=16000, help='0 means no kv cache management')
+    group.add_argument('--attn_mode', type=str, default='sparse', choices=['full', 'sparse'], help='attention mode')
     # add a group for eval
     group = parser.add_argument_group('eval')
     group.add_argument('--max_seq_lengths', type=int, nargs='+', default=[1000, 2000, 4000, 8000], help='max sequence lengths for ruler')
@@ -53,7 +55,14 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 print(f'Loading model - {MODEL_NAME}')
 torch.cuda.set_device(args.device)
-model = RWKV_X(model_path=args.model_path, strategy='cuda fp16')
+config = RWKV_X_Config(
+        moba_chunk_size=args.moba_chunk_size,
+        moba_topk=args.moba_topk,
+        max_kv_cache_size=args.max_kv_cache_size,
+        attn_mode=args.attn_mode
+    )
+print('Model Config:', config)
+model = RWKV_X(model_path=args.model_path, strategy='cuda fp16', config=config)
 print(f"Model loaded on {args.device}")
 print(f"Context length Test: {args.max_seq_lengths}")
 
@@ -100,7 +109,7 @@ decoding_df = pd.DataFrame(decoding_records)
 combined_df = prefill_df.merge(decoding_df, on="ctx_len", suffixes=("_prefill", "_decoding"))
 
 # 保存合并后的结果
-attn_mode = 'sparse_attention'
-kv_cache_mode = 'without_kv_cache_management'
+attn_mode = 'sparse_attention' if args.attn_mode == 'sparse' else 'full_attention'
+kv_cache_mode = 'without_kv_cache_management' if args.max_kv_cache_size == 0 else f'with_max_kv_cache_{args.max_kv_cache_size}'
 combined_output = f"{MODEL_STEM}_{attn_mode}_{kv_cache_mode}.csv"
 combined_df.to_csv(OUTPUT_DIR / combined_output, index=False)

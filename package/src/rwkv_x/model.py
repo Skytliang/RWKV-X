@@ -314,6 +314,7 @@ class CausalSparseAttention(nn.Module):
         self.window_size = config.moba_chunk_size * config.moba_topk
         # kv cache management
         self.max_kv_cache_size = config.max_kv_cache_size
+        self.attn_mode = config.attn_mode
 
     def forward_one(self, x, k_cache, v_cache):
         ''' used for decode, only one token at a time
@@ -328,7 +329,7 @@ class CausalSparseAttention(nn.Module):
         q, k, v = self.receptance(x), self.key(x), self.value(x)
         # split kv cache into two parts
         CT = k_cache.size(1)
-        if CT <= self.window_size: # for short sequence, use full attention
+        if CT <= self.window_size or self.attn_mode == 'full': # for short sequence, use full attention
             k_cache = torch.cat((k_cache, k), dim=1) # update k cache
             v_cache = torch.cat((v_cache, v), dim=1) # update v cache
             q = q.view(1, 1, self.n_head, C // self.n_head).transpose(1, 2) # (1, 1, C) -> (1, nh, 1, hs)
@@ -389,7 +390,7 @@ class CausalSparseAttention(nn.Module):
             x = x.unsqueeze(0) # (T, C) -> (1, T, C)
         B, T, C = x.size()
         CT = k_cache.size(1) # cache seq length
-        if (T+CT) <= self.window_size: # for short sequence, use full attention
+        if (T+CT) <= self.window_size or self.attn_mode == 'full': # for short sequence, use full attention
             q, k, v = self.receptance(x), self.key(x), self.value(x)
             # prefix mask
             causal_mask = torch.ones((T, T), dtype=torch.bool, device=x.device).tril(diagonal=0)
@@ -498,27 +499,28 @@ class SparseAttentionBlock(nn.Module):
 
 @dataclass
 class RWKV_X_Config:
-    n_rwkv_layer: int
-    n_moba_layer: int
-    n_head: int
-    n_embd: int
+    n_rwkv_layer: int = None
+    n_moba_layer: int = None
+    n_head: int = None
+    n_embd: int = None
     moba_chunk_size: int = 2048
     moba_topk: int = 3
     head_size: int = 64
-    max_kv_cache_size: int = 12288
+    max_kv_cache_size: int = 16000
+    attn_mode: str = 'sparse' # 'sparse' or 'full'
 
 class RWKV_X(nn.Module):
-    def __init__(self, model_path, strategy):
+    def __init__(self, model_path, strategy, config=None):
         super().__init__()
         print(f'Loading {model_path} ({strategy})\n')
-        rwkv_state_dict, moba_state_dict, config = self.load_from_ckpt(model_path, strategy)
+        rwkv_state_dict, moba_state_dict, config = self.load_from_ckpt(model_path, strategy, config)
         self.rwkv = RWKV_x070(rwkv_state_dict).to(device=DEVICE).to(DTYPE)
         self.moba = nn.ModuleList([SparseAttentionBlock(config) for i in range(config.n_moba_layer)])
         self.moba.to(device=DEVICE).to(DTYPE)
         self.moba.load_state_dict(moba_state_dict, strict=True)
         self.config = config
 
-    def load_from_ckpt(self, model_path, strategy):
+    def load_from_ckpt(self, model_path, strategy, config=None):
         global DTYPE, DEVICE
         ss = strategy.split(' ')
         DEVICE = ss[0]
@@ -544,14 +546,26 @@ class RWKV_X(nn.Module):
         n_head = n_embd // 64
         n_rwkv_layer = len({k.split('.')[1] for k in rwkv_state_dict if k.startswith("blocks.")})
         n_moba_layer = len({k.split('.')[0] for k in moba_state_dict if k[0].isdigit()})
-        config = RWKV_X_Config(
-            n_rwkv_layer=n_rwkv_layer,
-            n_moba_layer=n_moba_layer,
-            n_head=n_head,
-            n_embd=n_embd,
-            moba_chunk_size=2048,
-            moba_topk=3
-        )
+        if config is None:
+            config = RWKV_X_Config(
+                n_rwkv_layer=n_rwkv_layer,
+                n_moba_layer=n_moba_layer,
+                n_head=n_head,
+                n_embd=n_embd,
+                moba_chunk_size=2048,
+                moba_topk=3
+            )
+        else:
+            config = RWKV_X_Config(
+                n_rwkv_layer=n_rwkv_layer,
+                n_moba_layer=n_moba_layer,
+                n_head=n_head,
+                n_embd=n_embd,
+                moba_chunk_size=config.moba_chunk_size,
+                moba_topk=config.moba_topk,
+                max_kv_cache_size=config.max_kv_cache_size,
+                attn_mode=config.attn_mode
+            )
         return rwkv_state_dict, moba_state_dict, config
 
 
