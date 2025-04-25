@@ -363,9 +363,9 @@ class CausalSparseAttention(nn.Module):
         C = x.size(-1)
         q, k, v = self.receptance(x), self.key(x), self.value(x)
         # manage k, v cache
-        CT = k_cache.size(1)
-        if self.max_kv_cache_size > 0 and CT > self.max_kv_cache_size:
+        if self.max_kv_cache_size > 0 and k_cache.size(1) > self.max_kv_cache_size:
             k_cache, v_cache = self.update_kv_cache(q, k_cache, v_cache)
+        CT = k_cache.size(1)
         # apply the attention
         if CT <= self.window_size or self.attn_mode == 'full': # for short sequence, use full attention
             k_cache = torch.cat((k_cache, k), dim=1) # update k cache
@@ -380,7 +380,7 @@ class CausalSparseAttention(nn.Module):
             y = self.output(y)
             return y, k_cache, v_cache
         else:
-            reminder = k_cache.size(1) % self.moba_chunk_size
+            reminder = CT % self.moba_chunk_size
             k_chunk, k_reminder = k_cache[:, :CT-reminder, :], k_cache[:, CT-reminder:, :]
             v_chunk, v_reminder = v_cache[:, :CT-reminder, :], v_cache[:, CT-reminder:, :]
             # split k, v into chunks
@@ -419,10 +419,10 @@ class CausalSparseAttention(nn.Module):
         if len(x.shape) == 2:
             x = x.unsqueeze(0) # (T, C) -> (1, T, C)
         B, T, C = x.size()
-        CT = k_cache.size(1) # cache seq length
         # manage k, v cache
-        if self.max_kv_cache_size > 0 and CT > self.max_kv_cache_size:
+        if self.max_kv_cache_size > 0 and k_cache.size(1) > self.max_kv_cache_size:
             k_cache, v_cache = self.update_kv_cache(x, k_cache, v_cache)
+        CT = k_cache.size(1) # cache seq length
         # apply the attention
         if (T+CT) <= self.window_size or self.attn_mode == 'full': # for short sequence, use full attention
             q, k, v = self.receptance(x), self.key(x), self.value(x)
