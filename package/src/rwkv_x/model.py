@@ -330,13 +330,13 @@ class CausalSparseAttention(nn.Module):
         k_past, k_cur = k[:, :past_KT, :], k[:, past_KT: :]
         v_past, v_cur = v[:, :past_KT, :], v[:, past_KT:, :]
         q = q.view(B, QT, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, QT, hs)
-        k_past = k.view(B, past_KT, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, new_KT, hs)
-        v_past = v.view(B, past_KT, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, new_KT, hs)
+        k_past = k_past.view(B, past_KT, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, past_KT, hs)
+        v_past = v_past.view(B, past_KT, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, past_KT, hs)
         # calculate attention weights
         B, NH, QT, HS = q.size()
-        attn_weights = torch.matmul(q, k_past.transpose(2, 3)) / math.sqrt(HS) # (B, NH, QT, KT)
-        attn_weights = F.softmax(attn_weights, dim=-1) # (B, NH, QT, KT)
-        vote = attn_weights.sum(dim=-2) # (B, NH, KT) Sum the weight along the query dimension
+        attn_weights = torch.matmul(q, k_past.transpose(2, 3)) / math.sqrt(HS) # (B, NH, QT, past_KT)
+        attn_weights = F.softmax(attn_weights, dim=-1) # (B, NH, QT, past_KT)
+        vote = attn_weights.sum(dim=-2) # (B, NH, past_KT) Sum the weight along the query dimension
         assert self.min_kv_cache_size - self.kv_cache_window_size > 0
         indices = vote.topk(self.min_kv_cache_size - self.kv_cache_window_size, dim=-1).indices
         # Expand the indices to match the head dimension for gathering
@@ -344,8 +344,8 @@ class CausalSparseAttention(nn.Module):
         k_past_compress = torch.gather(k_past, 2, indices)
         v_past_compress = torch.gather(v_past, 2, indices)
         # Reshape back to (B, KT, C)
-        k_past_compress = k_past_compress.transpose(1, 2).contiguous().view(B, -1, C) # (B, KT, C)
-        v_past_compress = v_past_compress.transpose(1, 2).contiguous().view(B, -1, C) # (B, KT, C)
+        k_past_compress = k_past_compress.transpose(1, 2).contiguous().view(B, -1, C) # (B, min_kv_cache_size-win_size, C)
+        v_past_compress = v_past_compress.transpose(1, 2).contiguous().view(B, -1, C) # (B, min_kv_cache_size-win_size, C)
         # 
         k_cache = torch.cat([k_past_compress, k_cur], dim=1) # (B, min_kv_cache_size, C)
         v_cache = torch.cat([v_past_compress, v_cur], dim=1)
