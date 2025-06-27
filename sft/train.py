@@ -18,8 +18,13 @@ if __name__ == "__main__":
     parser.add_argument("--load_model", default="", type=str, help="path of rwkv model")  # full path, with .pth
     parser.add_argument("--wandb", default="", type=str)  # wandb project name. if "" then don't use wandb
     parser.add_argument("--proj_dir", default="out", type=str)
-    parser.add_argument("--run_name", default='demo_run', type=str, 
-                        help="run name for wandb. force to consider what is the purpose of this run")
+    parser.add_argument(
+        "--run_name",
+        default='demo_run',
+        type=str,
+        help=
+        "run name for wandb. force to consider what is the purpose of this run"
+    )
     parser.add_argument("--random_seed", default="-1", type=int)
 
     parser.add_argument("--data_file", default="", type=str)
@@ -132,7 +137,10 @@ if __name__ == "__main__":
     )
     rank_zero_info(str(vars(args)) + "\n")
 
-    assert args.data_type in ["json"]
+    # Check data type - support both json and mds formats
+    assert args.data_type in [
+        "json", "mds"
+    ], f"Error: data_type '{args.data_type}' not explicitly supported"
 
     assert args.precision in ["fp32", "tf32", "fp16", "bf16"]
     os.environ["RWKV_FLOAT_MODE"] = args.precision
@@ -186,7 +194,12 @@ if __name__ == "__main__":
         rank_zero_info('deepspeed config:', trainer.strategy.config)
 
     # must set shuffle=False, persistent_workers=False (because worker is in another thread)
-    data_loader = DataLoader(train_data, shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, 
-                             persistent_workers=False, drop_last=True)
+    data_loader = DataLoader(train_data,
+                             shuffle=False,
+                             pin_memory=True,
+                             batch_size=args.micro_bsz,
+                             num_workers=1,
+                             persistent_workers=False,
+                             drop_last=True)
 
     trainer.fit(model, data_loader)
