@@ -61,6 +61,8 @@ if __name__ == "__main__":
     parser.add_argument("--moba_chunk_size", default=2048, type=int)
     parser.add_argument("--moba_topk", default=3, type=int)
 
+    parser.add_argument("--strategy", default="auto", type=str)
+
     parser = Trainer.add_argparse_args(parser)
     args = parser.parse_args()
 
