@@ -3,6 +3,7 @@
 ########################################################################################################
 
 import logging
+
 logging.basicConfig(level=logging.INFO)
 
 if __name__ == "__main__":
@@ -15,8 +16,13 @@ if __name__ == "__main__":
 
     parser = ArgumentParser()
 
-    parser.add_argument("--load_model", default="", type=str, help="path of rwkv model")  # full path, with .pth
-    parser.add_argument("--wandb", default="", type=str)  # wandb project name. if "" then don't use wandb
+    parser.add_argument("--load_model",
+                        default="",
+                        type=str,
+                        help="path of rwkv model")  # full path, with .pth
+    parser.add_argument(
+        "--wandb", default="",
+        type=str)  # wandb project name. if "" then don't use wandb
     parser.add_argument("--proj_dir", default="out", type=str)
     parser.add_argument(
         "--run_name",
@@ -29,39 +35,58 @@ if __name__ == "__main__":
 
     parser.add_argument("--data_file", default="", type=str)
     parser.add_argument("--data_type", default="utf-8", type=str)
-    parser.add_argument("--vocab_size", default=0, type=int)  # vocab_size = 0 means auto (for char-level LM and .txt data)
+    parser.add_argument(
+        "--vocab_size", default=0, type=int
+    )  # vocab_size = 0 means auto (for char-level LM and .txt data)
 
     parser.add_argument("--ctx_len", default=1024, type=int)
-    parser.add_argument("--epoch_steps", default=1000, type=int)  # a mini "epoch" has [epoch_steps] steps
-    parser.add_argument("--epoch_count", default=500, type=int)  # train for this many "epochs". will continue afterwards with lr = lr_final
-    parser.add_argument("--epoch_begin", default=0, type=int)  # if you load a model trained for x "epochs", set epoch_begin = x
-    parser.add_argument("--epoch_save", default=5, type=int)  # save the model every [epoch_save] "epochs"
+    parser.add_argument("--epoch_steps", default=1000,
+                        type=int)  # a mini "epoch" has [epoch_steps] steps
+    parser.add_argument(
+        "--epoch_count", default=500, type=int
+    )  # train for this many "epochs". will continue afterwards with lr = lr_final
+    parser.add_argument(
+        "--epoch_begin", default=0, type=int
+    )  # if you load a model trained for x "epochs", set epoch_begin = x
+    parser.add_argument("--epoch_save", default=5,
+                        type=int)  # save the model every [epoch_save] "epochs"
 
-    parser.add_argument("--micro_bsz", default=12, type=int)  # micro batch size (batch size per GPU)
+    parser.add_argument("--micro_bsz", default=12,
+                        type=int)  # micro batch size (batch size per GPU)
     parser.add_argument("--n_layer", default=6, type=int)
     parser.add_argument("--n_embd", default=512, type=int)
     parser.add_argument("--dim_att", default=0, type=int)
     parser.add_argument("--dim_ffn", default=0, type=int)
-    parser.add_argument("--pre_ffn", default=0, type=int)  # replace first att layer by ffn (sometimes better)
+    parser.add_argument(
+        "--pre_ffn", default=0,
+        type=int)  # replace first att layer by ffn (sometimes better)
     parser.add_argument("--head_size_a", default=64, type=int)
     parser.add_argument("--head_size_divisor", default=8, type=int)
 
-    parser.add_argument("--lr_init", default=6e-4, type=float)  # 6e-4 for L12-D768, 4e-4 for L24-D1024, 3e-4 for L24-D2048
+    parser.add_argument(
+        "--lr_init", default=6e-4, type=float
+    )  # 6e-4 for L12-D768, 4e-4 for L24-D1024, 3e-4 for L24-D2048
     parser.add_argument("--lr_final", default=1e-5, type=float)
-    parser.add_argument("--warmup_steps", default=-1, type=int)  # try 50 if you load a model
+    parser.add_argument("--warmup_steps", default=-1,
+                        type=int)  # try 50 if you load a model
     parser.add_argument("--beta1", default=0.9, type=float)
-    parser.add_argument("--beta2", default=0.99, type=float)  # use 0.999 when your model is close to convergence
+    parser.add_argument(
+        "--beta2", default=0.99,
+        type=float)  # use 0.999 when your model is close to convergence
     parser.add_argument("--adam_eps", default=1e-8, type=float)
-    parser.add_argument("--grad_cp", default=0, type=int)  # gradient checkpt: saves VRAM, but slower
-    parser.add_argument("--dropout", default=0, type=float) # try 0.01 / 0.02 / 0.05 / 0.1
-    parser.add_argument("--weight_decay", default=0, type=float) # try 0.1 / 0.01 / 0.001
+    parser.add_argument("--grad_cp", default=0,
+                        type=int)  # gradient checkpt: saves VRAM, but slower
+    parser.add_argument("--dropout", default=0,
+                        type=float)  # try 0.01 / 0.02 / 0.05 / 0.1
+    parser.add_argument("--weight_decay", default=0,
+                        type=float)  # try 0.1 / 0.01 / 0.001
     parser.add_argument("--weight_decay_final", default=-1, type=float)
-    parser.add_argument("--ds_bucket_mb", default=200, type=int)  # deepspeed bucket size in MB. 200 seems enough
+    parser.add_argument(
+        "--ds_bucket_mb", default=200,
+        type=int)  # deepspeed bucket size in MB. 200 seems enough
 
     parser.add_argument("--moba_chunk_size", default=2048, type=int)
     parser.add_argument("--moba_topk", default=3, type=int)
-
-    parser.add_argument("--strategy", default="auto", type=str)
 
     parser = Trainer.add_argparse_args(parser)
     args = parser.parse_args()
@@ -77,12 +102,17 @@ if __name__ == "__main__":
     from pytorch_lightning import seed_everything
 
     if args.random_seed >= 0:
-        print(f"########## WARNING: GLOBAL SEED {args.random_seed} THIS WILL AFFECT MULTIGPU SAMPLING ##########\n" * 3)
+        print(
+            f"########## WARNING: GLOBAL SEED {args.random_seed} THIS WILL AFFECT MULTIGPU SAMPLING ##########\n"
+            * 3)
         seed_everything(args.random_seed)
 
     np.set_printoptions(precision=4, suppress=True, linewidth=200)
-    warnings.filterwarnings("ignore", ".*Consider increasing the value of the `num_workers` argument*")
-    warnings.filterwarnings("ignore", ".*The progress bar already tracks a metric with the*")
+    warnings.filterwarnings(
+        "ignore",
+        ".*Consider increasing the value of the `num_workers` argument*")
+    warnings.filterwarnings(
+        "ignore", ".*The progress bar already tracks a metric with the*")
     # os.environ["WDS_SHOW_SEED"] = "1"
 
     args.my_timestamp = datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
@@ -101,7 +131,8 @@ if __name__ == "__main__":
     if args.dim_att <= 0:
         args.dim_att = args.n_embd
     if args.dim_ffn <= 0:
-        args.dim_ffn = int((args.n_embd * 3.5) // 32 * 32) # default = 3.5x emb size
+        args.dim_ffn = int(
+            (args.n_embd * 3.5) // 32 * 32)  # default = 3.5x emb size
 
     #args.run_name = f"{args.vocab_size} ctx{args.ctx_len} L{args.n_layer} D{args.n_embd}"
     if not os.path.exists(args.proj_dir):
@@ -114,8 +145,7 @@ if __name__ == "__main__":
     except:
         deepspeed_version = None
         pass
-    rank_zero_info(
-        f"""
+    rank_zero_info(f"""
 ############################################################################
 #
 # RWKV-5 {args.precision.upper()} on {args.num_nodes}x{args.devices} {args.accelerator.upper()}, bsz {args.num_nodes}x{args.devices}x{args.micro_bsz}={args.real_bsz}, {args.strategy} {'with grad_cp' if args.grad_cp > 0 else ''}
@@ -135,8 +165,7 @@ if __name__ == "__main__":
 # Found pytorch_lightning {pl.__version__}, recommend 1.9.5
 #
 ############################################################################
-"""
-    )
+""")
     rank_zero_info(str(vars(args)) + "\n")
 
     # Check data type - support both json and mds formats
@@ -148,9 +177,13 @@ if __name__ == "__main__":
     os.environ["RWKV_FLOAT_MODE"] = args.precision
     if args.precision == "fp32":
         for i in range(10):
-            rank_zero_info("\n\nNote: you are using fp32 (very slow). Try bf16 / tf32 for faster training.\n\n")
+            rank_zero_info(
+                "\n\nNote: you are using fp32 (very slow). Try bf16 / tf32 for faster training.\n\n"
+            )
     if args.precision == "fp16":
-        rank_zero_info("\n\nNote: you are using fp16 (might overflow). Try bf16 / tf32 for stable training.\n\n")
+        rank_zero_info(
+            "\n\nNote: you are using fp16 (might overflow). Try bf16 / tf32 for stable training.\n\n"
+        )
 
     os.environ["RWKV_JIT_ON"] = "1"
     if "deepspeed_stage_3" in args.strategy:
@@ -188,11 +221,14 @@ if __name__ == "__main__":
     train_data = MyDataset(args)
     args.vocab_size = train_data.vocab_size
 
-    trainer = Trainer.from_argparse_args(args, callbacks=[train_callback(args)])
+    trainer = Trainer.from_argparse_args(args,
+                                         callbacks=[train_callback(args)])
 
     if "deepspeed" in args.strategy:
-        trainer.strategy.config["zero_optimization"]["allgather_bucket_size"] = args.ds_bucket_mb * 1000 * 1000
-        trainer.strategy.config["zero_optimization"]["reduce_bucket_size"] = args.ds_bucket_mb * 1000 * 1000
+        trainer.strategy.config["zero_optimization"][
+            "allgather_bucket_size"] = args.ds_bucket_mb * 1000 * 1000
+        trainer.strategy.config["zero_optimization"][
+            "reduce_bucket_size"] = args.ds_bucket_mb * 1000 * 1000
         rank_zero_info('deepspeed config:', trainer.strategy.config)
 
     # must set shuffle=False, persistent_workers=False (because worker is in another thread)
